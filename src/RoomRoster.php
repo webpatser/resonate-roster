@@ -92,6 +92,26 @@ class RoomRoster
     }
 
     /**
+     * The number of connections in a channel.
+     *
+     * An alias of {@see socketCount()} that reads more naturally for
+     * non-presence channels, where "sockets" and "connections" are the same
+     * thing and there is no presence user to speak of.
+     */
+    public function connectionCount(string $channel): int
+    {
+        return $this->socketCount($channel);
+    }
+
+    /**
+     * Determine whether a channel has at least one connection.
+     */
+    public function isOccupied(string $channel): bool
+    {
+        return $this->keysMatching($this->keys->scanPattern($channel)) !== [];
+    }
+
+    /**
      * Determine whether a user is online in a channel.
      */
     public function isOnline(string $channel, string $userId): bool

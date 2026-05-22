@@ -135,6 +135,7 @@ A billing meter that needs to know whether a chat is still occupied can ask `use
 | `key_prefix` | `roster` | Namespace for every roster key. Avoid colons in the prefix. |
 | `ttl` | `90` | Seconds each node's key lives; refreshed on every heartbeat. |
 | `heartbeat_interval` | `30` | Seconds between reconcile ticks. Keep it well below `ttl`. |
+| `track` | `presence` | `presence` mirrors only presence channels; `all` mirrors every channel type, so the roster also answers "how many connections does this channel have". |
 
 Override any of these per environment with `RESONATE_ROSTER_*` variables (see the published config file).
 

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-22
+
+### Added
+
+- `track` config option (`presence` or `all`). In `all` mode the roster mirrors
+  every channel type, not just presence channels, so it doubles as a
+  cluster-wide connection count for public and private channels. Default stays
+  `presence`, so existing installs are unaffected.
+- `RoomRoster::connectionCount()`: connection count for a channel, an alias of
+  `socketCount()` that reads naturally for non-presence channels.
+- `RoomRoster::isOccupied()`: whether a channel has at least one connection.
+
 ## [0.1.0] - 2026-05-22
 
 Initial release.
@@ -35,5 +47,6 @@ Initial release.
   the `resonate-roster` config (`vendor:publish --tag=resonate-roster-config`).
 - Configurable Redis connection, key prefix, key TTL, and heartbeat interval.
 
-[Unreleased]: https://github.com/webpatser/resonate-roster/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/webpatser/resonate-roster/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/webpatser/resonate-roster/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/webpatser/resonate-roster/releases/tag/v0.1.0

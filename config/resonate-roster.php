@@ -63,4 +63,20 @@ return [
 
     'heartbeat_interval' => (int) env('RESONATE_ROSTER_HEARTBEAT', 30),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Channels to track
+    |--------------------------------------------------------------------------
+    |
+    | 'presence' mirrors only presence-* channels, the classic "who is online"
+    | roster. 'all' mirrors every channel type, so the roster also answers
+    | "how many connections does this public or private channel have" - which
+    | is what an occupancy consumer such as webpatser/resonate-webhooks needs.
+    |
+    | Supported: 'presence', 'all'
+    |
+    */
+
+    'track' => env('RESONATE_ROSTER_TRACK', 'presence'),
+
 ];

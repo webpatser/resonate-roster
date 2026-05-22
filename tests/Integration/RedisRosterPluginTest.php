@@ -69,7 +69,7 @@ it('mirrors presence subscriptions into redis', function () {
         ->and($roster->isOnline($channelName, 'u-bob'))->toBeTrue();
 });
 
-it('ignores non-presence channels', function () {
+it('ignores non-presence channels in presence track mode', function () {
     $app = app(ApplicationProvider::class)->findById('app-id');
     $context = new PluginContext(app(ChannelManager::class));
 
@@ -85,6 +85,30 @@ it('ignores non-presence channels', function () {
     });
 
     expect($this->redis->keys('roster-test:*'))->toBe([]);
+});
+
+it('mirrors non-presence channels when track is all', function () {
+    config()->set('resonate-roster.track', 'all');
+
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'updates-'.uniqid();
+
+    $connection = new FakeConnection('sock-1', $app);
+    $channel = app(ChannelManager::class)->for($app)->findOrCreate($channelName);
+    $channel->subscribe($connection);
+
+    $plugin = new RedisRosterPlugin;
+
+    runLoop(function () use ($plugin, $context, $channel, $connection) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($connection, $channel);
+    });
+
+    $roster = new RoomRoster(config('resonate-roster'));
+
+    expect($roster->connectionCount($channelName))->toBe(1)
+        ->and($roster->isOccupied($channelName))->toBeTrue();
 });
 
 it('removes a connection from the roster when it closes', function () {

@@ -68,3 +68,16 @@ it('does not bleed between similarly named channels', function () {
     expect($roster->socketCount('presence-foo'))->toBe(1)
         ->and($roster->users('presence-foobar'))->toBe(['u-2']);
 });
+
+it('counts connections on a non-presence channel', function () {
+    // A public channel: the roster stores empty user ids, the count still works.
+    $this->redis->hset('roster-test:updates:node-a', 'sock-1', '');
+    $this->redis->hset('roster-test:updates:node-b', 'sock-2', '');
+
+    $roster = new RoomRoster(config('resonate-roster'));
+
+    expect($roster->connectionCount('updates'))->toBe(2)
+        ->and($roster->users('updates'))->toBe([])
+        ->and($roster->isOccupied('updates'))->toBeTrue()
+        ->and($roster->isOccupied('private-quiet'))->toBeFalse();
+});

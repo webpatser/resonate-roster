@@ -58,6 +58,11 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     protected float $heartbeat;
 
     /**
+     * Which channels to mirror: 'presence' or 'all'.
+     */
+    protected string $track;
+
+    /**
      * Presence channels seen on this node: channel name => application id.
      *
      * There is no "all channels" lookup on {@see PluginContext}, so the
@@ -79,6 +84,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         $this->keys = new RosterKeys($config['key_prefix'] ?? 'roster');
         $this->ttl = (int) ($config['ttl'] ?? 90);
         $this->heartbeat = (float) ($config['heartbeat_interval'] ?? 30);
+        $this->track = $config['track'] ?? 'presence';
         $this->node = RosterKeys::nodeId();
         $this->redis = createRedisClient($this->makeConfig($config['connection'] ?? []));
     }
@@ -96,7 +102,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
      */
     public function onSubscribe(Connection $connection, Channel $channel): void
     {
-        if ($this->redis === null || ! $this->isPresenceChannel($channel)) {
+        if ($this->redis === null || ! $this->shouldTrack($channel)) {
             return;
         }
 
@@ -122,7 +128,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
      */
     public function onUnsubscribe(Connection $connection, Channel $channel): void
     {
-        if ($this->redis === null || ! $this->isPresenceChannel($channel)) {
+        if ($this->redis === null || ! $this->shouldTrack($channel)) {
             return;
         }
 
@@ -208,6 +214,18 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
             $map->setValues($members);
             $this->redis->expireIn($key, $this->ttl);
         }
+    }
+
+    /**
+     * Determine whether a channel should be mirrored, given the track mode.
+     *
+     * In 'all' mode every channel is mirrored, so the roster doubles as a
+     * cluster-wide occupancy count. In 'presence' mode only presence channels
+     * are, and a non-presence channel is left untouched.
+     */
+    protected function shouldTrack(Channel $channel): bool
+    {
+        return $this->track === 'all' || $this->isPresenceChannel($channel);
     }
 
     /**
