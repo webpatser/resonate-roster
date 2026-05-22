@@ -1,0 +1,53 @@
+{
+    "name": "webpatser/resonate-roster",
+    "description": "Redis room roster for Resonate: restart-safe, multi-node-correct presence channel membership",
+    "keywords": ["resonate", "websockets", "presence", "redis", "roster", "broadcasting"],
+    "license": "MIT",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Christoph Kempen",
+            "email": "christoph@downsized.nl"
+        }
+    ],
+    "require": {
+        "php": "^8.5",
+        "illuminate/contracts": "^13.0",
+        "illuminate/support": "^13.0",
+        "predis/predis": "^2.2",
+        "webpatser/fledge-fiber": "^13.4",
+        "webpatser/resonate": "^0.4"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.0|^11.0",
+        "pestphp/pest": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Webpatser\\ResonateRoster\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Webpatser\\ResonateRoster\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Webpatser\\ResonateRoster\\RosterServiceProvider"
+            ]
+        }
+    },
+    "scripts": {
+        "test": "pest"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
