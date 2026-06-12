@@ -33,10 +33,13 @@ class RosterKeys
      *
      * The trailing ":*" keeps "presence-foo" from matching "presence-foobar":
      * a node id always follows a literal colon.
+     *
+     * The channel segment is glob-escaped so that metacharacters in a channel
+     * name ("* ? [ \") match literally rather than broadening the SCAN sweep.
      */
     public function scanPattern(string $channel): string
     {
-        return $this->prefix.':'.$channel.':*';
+        return $this->prefix.':'.$this->escapeGlob($channel).':*';
     }
 
     /**
@@ -61,6 +64,18 @@ class RosterKeys
         $lastColon = strrpos($rest, ':');
 
         return $lastColon === false ? $rest : substr($rest, 0, $lastColon);
+    }
+
+    /**
+     * Escape Redis glob metacharacters so a value matches literally inside a
+     * SCAN MATCH pattern.
+     *
+     * Redis glob uses a backslash to escape the special characters "* ? [ \".
+     * The backslash itself is escaped first so it is not consumed twice.
+     */
+    protected function escapeGlob(string $value): string
+    {
+        return preg_replace('/([\\\\*?\[])/', '\\\\$1', $value);
     }
 
     /**
