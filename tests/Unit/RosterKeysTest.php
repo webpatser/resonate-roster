@@ -19,6 +19,18 @@ it('builds a scan pattern that does not match longer channel names', function ()
         ->and(fnmatch($pattern, 'roster:presence-foobar:web-1-1'))->toBeFalse();
 });
 
+it('escapes glob metacharacters in the channel so they match literally', function () {
+    $keys = new RosterKeys('roster');
+
+    $pattern = $keys->scanPattern('presence-a*[x]');
+
+    // The "*" and "[" are backslash-escaped, so the pattern matches only the
+    // literal channel name, not arbitrary channels it would otherwise glob over.
+    expect($pattern)->toBe('roster:presence-a\\*\\[x]:*')
+        ->and(fnmatch($pattern, 'roster:presence-a*[x]:web-1-1'))->toBeTrue()
+        ->and(fnmatch($pattern, 'roster:presence-aZZZ[x]:web-1-1'))->toBeFalse();
+});
+
 it('extracts the channel name from a full key', function () {
     $keys = new RosterKeys('roster');
 
