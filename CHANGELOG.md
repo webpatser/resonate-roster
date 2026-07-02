@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-02
+
+### Security
+- Escape glob metacharacters in the roster `SCAN MATCH` pattern so channel names cannot widen the scan scope.
+
 ## [0.2.0] - 2026-05-22
 
 ### Added
@@ -48,5 +53,6 @@ Initial release.
 - Configurable Redis connection, key prefix, key TTL, and heartbeat interval.
 
 [Unreleased]: https://github.com/webpatser/resonate-roster/compare/v0.2.0...HEAD
+[0.2.1]: https://github.com/webpatser/resonate-roster/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/webpatser/resonate-roster/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/webpatser/resonate-roster/releases/tag/v0.1.0
