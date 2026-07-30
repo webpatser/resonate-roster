@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-30
+
+### Fixed
+
+- Allow `webpatser/resonate` v0.5. The constraint was `^0.4`, which under Composer's 0.x caret semantics means `>=0.4 <0.5` and so excluded the current server release, making this package uninstallable alongside it. Now `^0.4|^0.5`. Verified against v0.5.1: the suite is green and the plugin contracts this package implements are unchanged.
+
+## [0.2.2] - 2026-07-30
+
+### Fixed
+
+- `escapeGlob()` declared a `string` return but `preg_replace` can return null; it now uses `addcslashes`, which escapes identically and cannot fail.
+- Channel names read back out of connection state could be `int|string`, because PHP coerces numeric-string array keys to integers. They are cast back to strings before use.
+
+### Changed
+
+- CI runs the suite against a real Redis service, so the previously self-skipping integration tests now execute, and adds Pint and PHPStan (level 8, no baseline and no ignores) as gates.
+
 ## [0.2.1] - 2026-07-02
 
 ### Security
