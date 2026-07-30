@@ -75,7 +75,7 @@ class RosterKeys
      */
     protected function escapeGlob(string $value): string
     {
-        return preg_replace('/([\\\\*?\[])/', '\\\\$1', $value);
+        return addcslashes($value, '\\*?[');
     }
 
     /**

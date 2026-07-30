@@ -152,8 +152,10 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
 
         $subscriptions = $connection->state('roster.channels', []);
 
+        // PHP coerces numeric-string array keys to int, so the channel name is
+        // restored to a string before it is fed back into the key schema.
         foreach (array_keys($subscriptions) as $name) {
-            $this->redis->getMap($this->keys->hashKey($name, $this->node))->remove($connection->id());
+            $this->redis->getMap($this->keys->hashKey((string) $name, $this->node))->remove($connection->id());
         }
 
         $connection->forgetState('roster.channels');
