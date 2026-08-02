@@ -5,40 +5,51 @@ All notable changes to `webpatser/resonate-roster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- Roster keys carry the application id. A key is now `{prefix}:{appId}:{channel}:{node}`, the shape `webpatser/resonate-delivery` already uses. Two applications configured in one Resonate process that both serve a channel of the same name (a `presence-lobby` each, say) shared a single Redis hash, so membership merged: `RoomRoster` reported both applications' members as one room, and every consumer reading the same keyspace inherited it (`webpatser/resonate-webhooks` fired occupancy edges against the wrong application, `webpatser/resonate-pulse` summed metrics across applications).
-- The heartbeat reconcile pass can no longer delete another application's members. It rebuilt the shared key authoritatively from one application's live connections, which removed the other application's members as stale on every tick. Each pass now only touches keys built from the application it is reconciling, and never touches a pre-0.3.0 key at all.
+## [0.3.0] - 2026-08-02
 
 ### Added
 
-- `legacy_fallback` config flag (`RESONATE_ROSTER_LEGACY_FALLBACK`, default `true`): the dual-read window. While it is on, a reader that finds no app-scoped key for a node falls back to that node's pre-0.3.0 unscoped key, so a rolling deploy of mixed old and new nodes keeps reporting correct membership in both directions. Set it to `false` to make reads strictly per application once every node is upgraded.
-- `php artisan resonate-roster:migrate-keys`: renames leftover pre-0.3.0 keys into the app-scoped schema, preserving their TTL. `--app=<id>` names the application to attribute them to (a single-app server needs no flag), `--prune` deletes them instead of attributing them (the honest option on a server whose applications shared channel names, where a merged key cannot be attributed at all), and `--dry-run` reports without writing. With no keys left it says so, which is the check to run before closing the window.
-- `RoomRoster::snapshot($appId = null)`: every occupied channel of an application in one read, returned as `channel => ['users' => [...], 'connections' => n]`. Gathering C channels through the per-channel methods costs `1 + 2C` full keyspace sweeps (roughly 1000 at 500 channels, on every dashboard poll); a snapshot is one sweep plus a single pipelined batch of `HGETALL`s, because that sweep already yields everything the answer needs. It honours the same dual-read window and the same default-application resolution as the other read methods, and throws the same `InvalidArgumentException` when a multi-app server omits the id. `webpatser/resonate-pulse` 0.3+ gathers its metrics through it instead of scanning the keyspace itself.
-- `RoomRoster` takes an optional ready predis client as its third constructor argument, so a host that already owns a connection (or a test that wants to instrument one) can hand it over instead of having one built from the config.
-- `RosterKeys::fromConfig()`, `RosterKeys::DEFAULT_PREFIX`, `prefix()`, and `legacyFallback()`, so a consumer such as `webpatser/resonate-webhooks` builds the schema from the roster's own config instead of repeating the prefix literal and drifting from it.
-- `RosterConnection::parameters()`: the one translation of the `connection` config block into predis parameters, shared by `RoomRoster` and the migrate command.
+- `legacy_fallback` config flag (`RESONATE_ROSTER_LEGACY_FALLBACK`, default `true`): readers consult a node's pre-0.3.0 unscoped key when it has no app-scoped one, which keeps a rolling deploy correct.
+- `php artisan resonate-roster:migrate-keys`: rename leftover pre-0.3.0 keys into the app-scoped schema, preserving TTL. `--app=<id>` attributes them, `--prune` deletes them instead, `--dry-run` reports without writing.
+- `RoomRoster::snapshot($appId = null)`: every occupied channel of one application as `channel => ['users' => [...], 'connections' => n]`, in one keyspace sweep plus one pipelined batch of `HGETALL`s.
+- Optional ready predis client as `RoomRoster`'s third constructor argument, for hosts and tests that own a connection already.
+- `RosterKeys::fromConfig()`, `RosterKeys::DEFAULT_PREFIX`, `prefix()`, and `legacyFallback()`, so consumers build the schema from the roster's own config instead of repeating the prefix literal.
+- `RosterConnection::parameters()`: the single translation of the `connection` config block into predis parameters.
 
 ### Changed
 
-- **API change.** Every `RoomRoster` read method takes the application id as an optional final argument: `users($channel, $appId = null)`, `sockets()`, `userCount()`, `socketCount()`, `connectionCount()`, `isOccupied()`, `isOnline($channel, $userId, $appId = null)`, and `occupiedChannels($appId = null)`. Existing single-app calls keep working untouched: with no id given, the sole configured application is used. On a server with several applications an omitted id now throws an `InvalidArgumentException` naming the fix, rather than quietly reading a merged roster. The id is appended rather than prepended on purpose, so no existing call can be silently reinterpreted.
-- `RosterKeys` speaks the app-scoped schema: `hashKey($appId, $channel, $node)`, `scanPattern($appId, $channel)`, `appPattern($appId)`, and `channelFromKey($appId, $key)`. The pre-0.3.0 builders live on as `legacyHashKey()`, `legacyScanPattern()`, `legacyAllPattern()`, `isLegacyKeyFor()`, and `legacyChannelFromKey()`, which is what the fallback reads. `allPattern()` is gone; use `appPattern()`. Anything calling `RosterKeys` directly needs updating.
-- `RedisRosterPlugin` tracks channels as application id => channel name, so two applications serving the same channel name are two entries instead of one overwriting the other.
-- `RoomRoster` takes an optional `ApplicationProvider` as its second constructor argument, which is what resolves the default application. The container binding passes it; code that builds a `RoomRoster` by hand should too, or pass the application id on every call.
+- Scope every roster key to its application: `{prefix}:{appId}:{channel}:{node}`, replacing `{prefix}:{channel}:{node}`.
+- Add the application id as an optional final argument to every `RoomRoster` read method (`users()`, `sockets()`, `userCount()`, `socketCount()`, `connectionCount()`, `isOccupied()`, `isOnline()`, `occupiedChannels()`). Single-app hosts are unaffected; a multi-app host that omits it now throws `InvalidArgumentException` instead of reading a merged roster.
+- Move `RosterKeys` to the app-scoped schema: `hashKey($appId, $channel, $node)`, `scanPattern($appId, $channel)`, `appPattern($appId)`, `channelFromKey($appId, $key)`. The pre-0.3.0 builders live on as `legacyHashKey()`, `legacyScanPattern()`, `legacyAllPattern()`, `isLegacyKeyFor()`, and `legacyChannelFromKey()`.
+- Track channels in `RedisRosterPlugin` as application id => channel name, so two applications serving one channel name stay separate.
+- Add an optional `ApplicationProvider` as `RoomRoster`'s second constructor argument; it resolves the default application. Hand-built instances should pass it or pass the application id on every call.
+
+### Removed
+
+- `RosterKeys::allPattern()`. Use `appPattern($appId)`, or `legacyAllPattern()` while the fallback window is open.
+
+### Fixed
+
+- Stop two applications sharing one Redis hash for a channel of the same name, which reported both memberships as one room and misled every consumer of the keyspace.
+- Stop the heartbeat reconcile pass deleting another application's members. Each pass now only touches keys built from the application it reconciles, and never a pre-0.3.0 key.
 
 ### Upgrading
 
-This release changes the key schema, so deploy it in this order. The full procedure, including what an operator sees at each step, is in the README under "Upgrading to the app-scoped key schema".
+The key schema changed from `{prefix}:{channel}:{node}` to `{prefix}:{appId}:{channel}:{node}`. A dual-read window (`legacy_fallback`, default `true`) covers the gap: readers take each node's app-scoped key, and its pre-0.3.0 key when it has none. Deploy in this order.
 
-1. Deploy 0.3.x everywhere with `legacy_fallback` left at `true` (the default).
-2. Roll the Resonate nodes one at a time. Upgraded nodes write app-scoped keys, nodes still to come write unscoped ones, and readers merge both per node, so nothing reads as empty mid-deploy.
-3. Pass the application id in host code that reads a multi-app roster.
-4. Once every node is upgraded, run `php artisan resonate-roster:migrate-keys --dry-run` and then, if anything is left, `resonate-roster:migrate-keys` (or `--prune`).
+1. Deploy 0.3.x everywhere with `legacy_fallback` at `true`, consumers included: `webpatser/resonate-webhooks` 0.3+ and `webpatser/resonate-pulse` 0.3+. Older consumers read the wrong keyspace.
+2. Roll the Resonate nodes one at a time. Mixed old and new nodes both report correctly, so nothing reads as empty mid-deploy.
+3. Update host code that reads a multi-app roster (see the API changes below).
+4. Run `php artisan resonate-roster:migrate-keys --dry-run`, then `resonate-roster:migrate-keys` (or `--prune`) if anything is left.
 5. Set `RESONATE_ROSTER_LEGACY_FALLBACK=false` and restart to close the window.
 
-Consumers that read roster keys themselves must be upgraded in step 1 too: use `webpatser/resonate-webhooks` 0.3+ and `webpatser/resonate-pulse` 0.3+, which reads through `RoomRoster::snapshot()` rather than the keyspace and so reports per application.
+API changes to make in step 3:
+
+- `RoomRoster` read methods take an optional trailing `$appId`. A single-app host needs no change; a multi-app host that omits it throws `InvalidArgumentException`.
+- `RosterKeys::allPattern()` is gone: use `appPattern($appId)`.
+- `RosterKeys::channelFromKey()` takes the application id first: `channelFromKey($appId, $key)`.
+
+The operator walkthrough, with what to expect at each step and how to roll back, is in the README under "Upgrading to the app-scoped key schema".
 
 ## [0.2.3] - 2026-07-30
 
@@ -102,7 +113,9 @@ Initial release.
   the `resonate-roster` config (`vendor:publish --tag=resonate-roster-config`).
 - Configurable Redis connection, key prefix, key TTL, and heartbeat interval.
 
-[Unreleased]: https://github.com/webpatser/resonate-roster/compare/v0.2.3...HEAD
+[0.3.0]: https://github.com/webpatser/resonate-roster/compare/v0.2.3...v0.3.0
+[0.2.3]: https://github.com/webpatser/resonate-roster/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/webpatser/resonate-roster/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/webpatser/resonate-roster/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/webpatser/resonate-roster/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/webpatser/resonate-roster/releases/tag/v0.1.0

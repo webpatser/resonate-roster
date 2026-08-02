@@ -184,7 +184,7 @@ So 0.3.0 ships a **dual-read window**. New writes only ever go to the app-scoped
 
 **1. Deploy 0.3.x with `legacy_fallback` left at `true`.**
 
-Deploy the package to your Laravel app and to the Resonate hosts, and upgrade any consumer that reads roster keys in the same step (`webpatser/resonate-webhooks` 0.3+). Do not set `RESONATE_ROSTER_LEGACY_FALLBACK=false` yet.
+Deploy the package to your Laravel app and to the Resonate hosts, and upgrade any consumer that reads roster keys in the same step: `webpatser/resonate-webhooks` 0.3+ and `webpatser/resonate-pulse` 0.3+. Do not set `RESONATE_ROSTER_LEGACY_FALLBACK=false` yet.
 
 *What you see:* nothing changes. Nodes still running the old code keep writing unscoped keys, and the new reader serves them through the fallback.
 
