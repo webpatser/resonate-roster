@@ -374,8 +374,12 @@ class RoomRoster
     {
         $applications = $this->applications?->all();
 
-        if ($applications !== null && $applications->count() === 1) {
-            return $applications->first()->id();
+        $application = $applications !== null && $applications->count() === 1
+            ? $applications->first()
+            : null;
+
+        if ($application !== null) {
+            return $application->id();
         }
 
         throw new InvalidArgumentException(

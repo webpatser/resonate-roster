@@ -124,8 +124,10 @@ class MigrateRosterKeysCommand extends Command
 
         $all = $applications->all();
 
-        if ($all->count() === 1) {
-            return $all->first()->id();
+        $application = $all->count() === 1 ? $all->first() : null;
+
+        if ($application !== null) {
+            return $application->id();
         }
 
         $this->components->error(
