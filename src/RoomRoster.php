@@ -4,6 +4,7 @@ namespace Webpatser\ResonateRoster;
 
 use InvalidArgumentException;
 use Predis\Client;
+use Predis\ClientContextInterface;
 use Webpatser\Resonate\Contracts\ApplicationProvider;
 
 /**
@@ -25,11 +26,6 @@ use Webpatser\Resonate\Contracts\ApplicationProvider;
 class RoomRoster
 {
     /**
-     * The lazily built predis client.
-     */
-    protected ?Client $client = null;
-
-    /**
      * The roster key schema.
      */
     protected RosterKeys $keys;
@@ -44,10 +40,12 @@ class RoomRoster
      *
      * @param  array<string, mixed>  $config  The "resonate-roster" config array.
      * @param  ApplicationProvider|null  $applications  Used to resolve the default application id.
+     * @param  Client|null  $client  A ready predis client; built from the config on first use when left null.
      */
     public function __construct(
         protected array $config,
         protected ?ApplicationProvider $applications = null,
+        protected ?Client $client = null,
     ) {
         $this->keys = RosterKeys::fromConfig($config);
     }
@@ -171,6 +169,156 @@ class RoomRoster
         }
 
         return array_map('strval', array_keys($channels));
+    }
+
+    /**
+     * Every occupied channel of an application, with its users and connections.
+     *
+     * The bulk read, for a dashboard or a billing sweep that wants the whole
+     * application at once rather than one channel at a time. Asking the
+     * per-channel methods for C channels costs 1 + 2C full keyspace sweeps,
+     * which at a few hundred channels is a few hundred sweeps per poll against
+     * the same Redis the socket server is using. This is one sweep (two while
+     * the legacy fallback window is open) plus a single pipelined batch of
+     * HGETALLs, because one sweep already yields everything the answer needs:
+     * the hash values are the presence user ids and the field count is the
+     * connection count.
+     *
+     * A channel whose node key exists but holds no members is reported with no
+     * users and no connections, exactly as {@see isOccupied()} treats it: Redis
+     * drops a hash when its last field goes, so an empty one is a momentary
+     * state rather than a lasting one.
+     *
+     * @return array<string, array{users: list<string>, connections: int}> Keyed by channel name.
+     */
+    public function snapshot(?string $appId = null): array
+    {
+        $keys = $this->snapshotKeys($this->appId($appId));
+
+        /** @var array<string, int> $connections */
+        $connections = [];
+
+        /** @var array<string, array<string, true>> $users */
+        $users = [];
+
+        /** @var list<string> $flat */
+        $flat = [];
+
+        /** @var list<string> $owners */
+        $owners = [];
+
+        foreach ($keys as $channel => $nodeKeys) {
+            $channel = (string) $channel;
+
+            $connections[$channel] = 0;
+
+            foreach ($nodeKeys as $key) {
+                $flat[] = $key;
+                $owners[] = $channel;
+            }
+        }
+
+        if ($flat === []) {
+            return [];
+        }
+
+        foreach ($this->pipelinedHashes($flat) as $index => $hash) {
+            $channel = $owners[$index] ?? null;
+
+            if ($channel === null) {
+                continue;
+            }
+
+            $connections[$channel] += count($hash);
+
+            // The hash is socket id => presence user id. A blank user id is a
+            // non-presence member, which counts as a connection but not as a
+            // distinct user, the same way users() treats it.
+            foreach ($hash as $userId) {
+                if (is_string($userId) && $userId !== '') {
+                    $users[$channel][$userId] = true;
+                }
+            }
+        }
+
+        $channels = [];
+
+        foreach ($connections as $channel => $count) {
+            $channel = (string) $channel;
+
+            $channels[$channel] = [
+                'users' => array_map('strval', array_keys($users[$channel] ?? [])),
+                'connections' => $count,
+            ];
+        }
+
+        return $channels;
+    }
+
+    /**
+     * The keys to read for every channel of an application, node by node.
+     *
+     * The dual-read window {@see nodeKeys()} implements for one channel,
+     * applied to a whole application in one pass: the app-scoped key of every
+     * node that has one, plus the pre-0.3.0 key of every node that has none.
+     * Membership is per node, so this can neither double count a socket nor
+     * drop a node, and it costs the same two sweeps at any channel count.
+     *
+     * @return array<string, array<string, string>> Channel name => node id => key.
+     */
+    protected function snapshotKeys(string $appId): array
+    {
+        $keys = [];
+
+        foreach ($this->keysMatching($this->keys->appPattern($appId)) as $key) {
+            $channel = $this->keys->channelFromKey($appId, $key);
+
+            if ($channel !== null) {
+                $keys[$channel][$this->keys->nodeFromKey($key)] = $key;
+            }
+        }
+
+        if ($this->keys->legacyFallback()) {
+            foreach ($this->keysMatching($this->keys->legacyAllPattern()) as $key) {
+                $channel = $this->keys->legacyChannelFromKey($key);
+
+                if ($channel !== null) {
+                    $keys[$channel][$this->keys->nodeFromKey($key)] ??= $key;
+                }
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Read every given key's hash in a single pipelined round trip.
+     *
+     * Ordering is what makes this usable: predis returns one reply per queued
+     * command, in the order queued, so index i of the result belongs to key i.
+     *
+     * @param  list<string>  $keys
+     * @return list<array<array-key, mixed>>
+     */
+    protected function pipelinedHashes(array $keys): array
+    {
+        $results = $this->client()->pipeline(function (ClientContextInterface $pipe) use ($keys): void {
+            foreach ($keys as $key) {
+                $pipe->hgetall($key);
+            }
+        });
+
+        if (! is_array($results)) {
+            return [];
+        }
+
+        $hashes = [];
+
+        foreach (array_values($results) as $result) {
+            $hashes[] = is_array($result) ? $result : [];
+        }
+
+        return $hashes;
     }
 
     /**

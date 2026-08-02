@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `legacy_fallback` config flag (`RESONATE_ROSTER_LEGACY_FALLBACK`, default `true`): the dual-read window. While it is on, a reader that finds no app-scoped key for a node falls back to that node's pre-0.3.0 unscoped key, so a rolling deploy of mixed old and new nodes keeps reporting correct membership in both directions. Set it to `false` to make reads strictly per application once every node is upgraded.
 - `php artisan resonate-roster:migrate-keys`: renames leftover pre-0.3.0 keys into the app-scoped schema, preserving their TTL. `--app=<id>` names the application to attribute them to (a single-app server needs no flag), `--prune` deletes them instead of attributing them (the honest option on a server whose applications shared channel names, where a merged key cannot be attributed at all), and `--dry-run` reports without writing. With no keys left it says so, which is the check to run before closing the window.
+- `RoomRoster::snapshot($appId = null)`: every occupied channel of an application in one read, returned as `channel => ['users' => [...], 'connections' => n]`. Gathering C channels through the per-channel methods costs `1 + 2C` full keyspace sweeps (roughly 1000 at 500 channels, on every dashboard poll); a snapshot is one sweep plus a single pipelined batch of `HGETALL`s, because that sweep already yields everything the answer needs. It honours the same dual-read window and the same default-application resolution as the other read methods, and throws the same `InvalidArgumentException` when a multi-app server omits the id. `webpatser/resonate-pulse` 0.3+ gathers its metrics through it instead of scanning the keyspace itself.
+- `RoomRoster` takes an optional ready predis client as its third constructor argument, so a host that already owns a connection (or a test that wants to instrument one) can hand it over instead of having one built from the config.
 - `RosterKeys::fromConfig()`, `RosterKeys::DEFAULT_PREFIX`, `prefix()`, and `legacyFallback()`, so a consumer such as `webpatser/resonate-webhooks` builds the schema from the roster's own config instead of repeating the prefix literal and drifting from it.
 - `RosterConnection::parameters()`: the one translation of the `connection` config block into predis parameters, shared by `RoomRoster` and the migrate command.
 
@@ -36,7 +38,7 @@ This release changes the key schema, so deploy it in this order. The full proced
 4. Once every node is upgraded, run `php artisan resonate-roster:migrate-keys --dry-run` and then, if anything is left, `resonate-roster:migrate-keys` (or `--prune`).
 5. Set `RESONATE_ROSTER_LEGACY_FALLBACK=false` and restart to close the window.
 
-Consumers that read roster keys themselves must be upgraded in step 1 too: use `webpatser/resonate-webhooks` 0.3+, and note that `webpatser/resonate-pulse` still reads the pre-0.3.0 layout, so its per-application figures stay merged until it is updated.
+Consumers that read roster keys themselves must be upgraded in step 1 too: use `webpatser/resonate-webhooks` 0.3+ and `webpatser/resonate-pulse` 0.3+, which reads through `RoomRoster::snapshot()` rather than the keyspace and so reports per application.
 
 ## [0.2.3] - 2026-07-30
 

@@ -149,6 +149,98 @@ it('ignores pre-0.3.0 keys once the fallback window is closed', function () {
         ->and($roster->occupiedChannels('app-id'))->toBe(['presence-room']);
 });
 
+it('snapshots every occupied channel with its users and connections', function () {
+    // presence-room: three sockets over two nodes, two distinct users.
+    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
+    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-2', 'u-bob');
+    $this->redis->hset('roster-test:app-id:presence-room:node-b', 'sock-3', 'u-alice');
+
+    // presence-chat.7: one socket, one user.
+    $this->redis->hset('roster-test:app-id:presence-chat.7:node-a', 'sock-4', 'u-carol');
+
+    // A public channel: connections without presence users.
+    $this->redis->hset('roster-test:app-id:updates:node-a', 'sock-5', '');
+    $this->redis->hset('roster-test:app-id:updates:node-b', 'sock-6', '');
+
+    // Another application's room, which this snapshot must not see.
+    $this->redis->hset('roster-test:app-two:presence-elsewhere:node-a', 'sock-7', 'u-dave');
+
+    $snapshot = roster()->snapshot('app-id');
+
+    expect($snapshot)->toHaveCount(3)
+        ->and($snapshot['presence-room']['connections'])->toBe(3)
+        ->and($snapshot['presence-room']['users'])->toEqualCanonicalizing(['u-alice', 'u-bob'])
+        ->and($snapshot['presence-chat.7']['connections'])->toBe(1)
+        ->and($snapshot['presence-chat.7']['users'])->toBe(['u-carol'])
+        ->and($snapshot['updates']['connections'])->toBe(2)
+        ->and($snapshot['updates']['users'])->toBe([])
+        ->and($snapshot)->not->toHaveKey('presence-elsewhere');
+});
+
+it('returns an empty snapshot when nothing is occupied', function () {
+    expect(roster()->snapshot('app-id'))->toBe([]);
+});
+
+it('keeps two applications that share a channel name apart in a snapshot', function () {
+    $this->redis->hset('roster-test:app-id:presence-lobby:node-a', 'sock-1', 'u-alice');
+    $this->redis->hset('roster-test:app-id:presence-lobby:node-a', 'sock-2', 'u-bob');
+    $this->redis->hset('roster-test:app-two:presence-lobby:node-a', 'sock-3', 'u-carol');
+
+    $roster = roster();
+
+    $first = $roster->snapshot('app-id');
+    $second = $roster->snapshot('app-two');
+
+    expect($first['presence-lobby']['connections'])->toBe(2)
+        ->and($first['presence-lobby']['users'])->toEqualCanonicalizing(['u-alice', 'u-bob'])
+        ->and($second['presence-lobby']['connections'])->toBe(1)
+        ->and($second['presence-lobby']['users'])->toBe(['u-carol']);
+});
+
+it('snapshots a pre-0.3.0 node alongside an upgraded one', function () {
+    // node-a already writes the app-scoped key, node-b has not restarted yet.
+    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
+    $this->redis->hset('roster-test:presence-room:node-b', 'sock-2', 'u-bob');
+
+    // A channel that only a not-yet-upgraded node knows about at all.
+    $this->redis->hset('roster-test:presence-old:node-b', 'sock-3', 'u-carol');
+
+    // The same node's stale pre-0.3.0 key must not be counted twice.
+    $this->redis->hset('roster-test:presence-room:node-a', 'sock-stale', 'u-stale');
+
+    $snapshot = roster()->snapshot('app-id');
+
+    expect($snapshot['presence-room']['connections'])->toBe(2)
+        ->and($snapshot['presence-room']['users'])->toEqualCanonicalizing(['u-alice', 'u-bob'])
+        ->and($snapshot['presence-old']['connections'])->toBe(1)
+        ->and($snapshot['presence-old']['users'])->toBe(['u-carol']);
+});
+
+it('ignores pre-0.3.0 keys in a snapshot once the fallback window is closed', function () {
+    config()->set('resonate-roster.legacy_fallback', false);
+
+    $this->redis->hset('roster-test:presence-old:node-old', 'sock-1', 'u-alice');
+    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-2', 'u-bob');
+
+    $snapshot = roster()->snapshot('app-id');
+
+    expect(array_keys($snapshot))->toBe(['presence-room'])
+        ->and($snapshot['presence-room']['users'])->toBe(['u-bob']);
+});
+
+it('snapshots the sole configured application by default', function () {
+    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
+
+    expect(roster()->snapshot()['presence-room']['users'])->toBe(['u-alice']);
+});
+
+it('refuses to guess the application for a snapshot', function () {
+    withSecondApplication();
+
+    expect(fn () => roster()->snapshot())
+        ->toThrow(InvalidArgumentException::class, 'could not resolve a default application');
+});
+
 it('defaults to the sole configured application', function () {
     $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
 

@@ -131,6 +131,24 @@ $roster->occupiedChannels();                // every channel with members
 
 A billing meter that needs to know whether a chat is still occupied can ask `userCount('presence-chat.42')` directly, with no call into the socket server.
 
+### Reading the whole application at once
+
+A dashboard or a periodic sweep usually wants every channel, not one. Each per-channel call is its own full keyspace `SCAN`, so asking "who is in it and how many connections" for C channels costs `1 + 2C` sweeps: at 500 channels that is roughly 1000 sweeps per poll, against the Redis your socket server is also using.
+
+`snapshot()` answers all of it in one sweep plus a single pipelined batch of `HGETALL`s, because that sweep already yields everything the answer needs (the hash values are the presence user ids, the field count is the connection count):
+
+```php
+$roster->snapshot();          // sole application
+$roster->snapshot('481523');  // a named one
+
+// [
+//     'presence-chat.42' => ['users' => ['7', '31'], 'connections' => 3],
+//     'updates'          => ['users' => [], 'connections' => 12],
+// ]
+```
+
+The cost does not grow with the number of channels, and the result honours the same dual-read window as every other read method, so it stays correct mid-upgrade. Consumers such as `webpatser/resonate-pulse` gather their metrics through it.
+
 ### Which application?
 
 A roster belongs to one application, so every read method takes the application id as an optional final argument:
