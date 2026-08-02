@@ -18,7 +18,7 @@ use function Fledge\Async\Redis\createRedisClient;
  * Resonate restart, is correct across nodes, and is queryable from the backend
  * without a metrics round-trip.
  *
- * Membership is kept per node ({@see RosterKeys}): the lifecycle hooks make
+ * Membership is kept per application and per node ({@see RosterKeys}): the lifecycle hooks make
  * the fast, incremental edits while the heartbeat tick is the authority that
  * rebuilds each tracked channel from the live connections and refreshes the
  * TTL. A node that dies without firing onClose simply lets its keys expire.
@@ -63,12 +63,14 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     protected string $track;
 
     /**
-     * Presence channels seen on this node: channel name => application id.
+     * Channels seen on this node: application id => channel name => true.
      *
      * There is no "all channels" lookup on {@see PluginContext}, so the
-     * heartbeat reconciles against this locally tracked set.
+     * heartbeat reconciles against this locally tracked set. It is keyed by
+     * application first so two applications serving a channel of the same
+     * name are two entries, not one that overwrites the other.
      *
-     * @var array<string, string>
+     * @var array<string, array<string, true>>
      */
     protected array $tracked = [];
 
@@ -81,7 +83,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
 
         $config = config('resonate-roster', []);
 
-        $this->keys = new RosterKeys($config['key_prefix'] ?? 'roster');
+        $this->keys = RosterKeys::fromConfig($config);
         $this->ttl = (int) ($config['ttl'] ?? 90);
         $this->heartbeat = (float) ($config['heartbeat_interval'] ?? 30);
         $this->track = $config['track'] ?? 'presence';
@@ -107,17 +109,19 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         }
 
         $name = $channel->name();
+        $appId = $connection->app()->id();
 
-        $this->tracked[$name] = $connection->app()->id();
+        $this->tracked[$appId][$name] = true;
 
         // Record the channel on the connection itself: onClose fires after the
         // connection has already been stripped from every channel, so this is
-        // the only way the close handler can know what to clean up.
+        // the only way the close handler can know what to clean up. The
+        // application comes off the connection, so it needs no bookkeeping.
         $subscriptions = $connection->state('roster.channels', []);
         $subscriptions[$name] = true;
         $connection->setState('roster.channels', $subscriptions);
 
-        $key = $this->keys->hashKey($name, $this->node);
+        $key = $this->keys->hashKey($appId, $name, $this->node);
 
         $this->redis->getMap($key)->setValue($connection->id(), $this->userId($connection, $channel));
         $this->redis->expireIn($key, $this->ttl);
@@ -138,7 +142,8 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         unset($subscriptions[$name]);
         $connection->setState('roster.channels', $subscriptions);
 
-        $this->redis->getMap($this->keys->hashKey($name, $this->node))->remove($connection->id());
+        $this->redis->getMap($this->keys->hashKey($connection->app()->id(), $name, $this->node))
+            ->remove($connection->id());
     }
 
     /**
@@ -150,12 +155,14 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
             return;
         }
 
+        $appId = $connection->app()->id();
         $subscriptions = $connection->state('roster.channels', []);
 
         // PHP coerces numeric-string array keys to int, so the channel name is
         // restored to a string before it is fed back into the key schema.
         foreach (array_keys($subscriptions) as $name) {
-            $this->redis->getMap($this->keys->hashKey((string) $name, $this->node))->remove($connection->id());
+            $this->redis->getMap($this->keys->hashKey($appId, (string) $name, $this->node))
+                ->remove($connection->id());
         }
 
         $connection->forgetState('roster.channels');
@@ -182,6 +189,12 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
      * This is the authoritative pass: it adds anything a missed onSubscribe
      * left out, removes anything a missed onClose left behind, refreshes the
      * TTL, and forgets channels that have emptied.
+     *
+     * Every key it touches is built from the application it is reconciling
+     * for, so the pass is confined to one application's own keys: it can never
+     * delete another application's members, even when both serve a channel of
+     * the same name. It never touches a pre-0.3.0 key either, so during a
+     * rolling upgrade an old node keeps owning its own keys.
      */
     protected function reconcile(): void
     {
@@ -189,32 +202,63 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
             return;
         }
 
-        foreach ($this->tracked as $name => $appId) {
-            $key = $this->keys->hashKey($name, $this->node);
+        foreach ($this->tracked as $appId => $channels) {
+            // PHP coerces numeric-string array keys to int, and application
+            // ids are usually numeric, so both segments are cast back before
+            // they are fed into the key schema.
+            $appId = (string) $appId;
 
-            $members = [];
-
-            foreach ($this->context->connectionsOn($appId, $name) as $channelConnection) {
-                $members[$channelConnection->connection()->id()] = (string) ($channelConnection->data('user_id') ?? '');
+            foreach (array_keys($channels) as $channel) {
+                $this->reconcileChannel($appId, (string) $channel);
             }
+        }
+    }
 
-            if ($members === []) {
-                $this->redis->delete($key);
-                unset($this->tracked[$name]);
+    /**
+     * Rebuild one application's key for one channel from the live connections.
+     */
+    protected function reconcileChannel(string $appId, string $name): void
+    {
+        if ($this->redis === null) {
+            return;
+        }
 
-                continue;
-            }
+        $key = $this->keys->hashKey($appId, $name, $this->node);
 
-            $map = $this->redis->getMap($key);
+        $members = [];
 
-            $stale = array_values(array_diff($map->getKeys(), array_keys($members)));
+        foreach ($this->context->connectionsOn($appId, $name) as $channelConnection) {
+            $members[$channelConnection->connection()->id()] = (string) ($channelConnection->data('user_id') ?? '');
+        }
 
-            if ($stale !== []) {
-                $map->remove(...$stale);
-            }
+        if ($members === []) {
+            $this->redis->delete($key);
+            $this->forget($appId, $name);
 
-            $map->setValues($members);
-            $this->redis->expireIn($key, $this->ttl);
+            return;
+        }
+
+        $map = $this->redis->getMap($key);
+
+        $stale = array_values(array_diff($map->getKeys(), array_keys($members)));
+
+        if ($stale !== []) {
+            $map->remove(...$stale);
+        }
+
+        $map->setValues($members);
+        $this->redis->expireIn($key, $this->ttl);
+    }
+
+    /**
+     * Drop an emptied channel, and its application once it holds none.
+     */
+    protected function forget(string $appId, string $name): void
+    {
+        unset($this->tracked[$appId][$name]);
+
+        if (($this->tracked[$appId] ?? []) === []) {
+            unset($this->tracked[$appId]);
         }
     }
 

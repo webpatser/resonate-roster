@@ -2,15 +2,22 @@
 
 namespace Webpatser\ResonateRoster;
 
+use InvalidArgumentException;
 use Predis\Client;
+use Webpatser\Resonate\Contracts\ApplicationProvider;
 
 /**
  * The read side of the roster.
  *
  * A plain synchronous query API for the host app, a billing meter, or any
- * other backend code: it answers "who is online in channel C" by reading the
- * per-node Redis hashes the {@see RedisRosterPlugin} writes, with no metrics
- * round-trip to the socket server.
+ * other backend code: it answers "who is online in channel C of application A"
+ * by reading the per-node Redis hashes the {@see RedisRosterPlugin} writes,
+ * with no metrics round-trip to the socket server.
+ *
+ * Every method takes an optional application id as its last argument. Leave it
+ * out on a single-app server and the sole configured application is used; a
+ * server with several applications must pass it, since a channel name alone
+ * does not identify a roster any more.
  *
  * It uses predis (pure PHP, no extension required), since the consuming app
  * is an ordinary Laravel request, not the fiber runtime.
@@ -28,13 +35,21 @@ class RoomRoster
     protected RosterKeys $keys;
 
     /**
+     * The sole configured application id, resolved on first use.
+     */
+    protected ?string $defaultAppId = null;
+
+    /**
      * Create a new roster reader.
      *
      * @param  array<string, mixed>  $config  The "resonate-roster" config array.
+     * @param  ApplicationProvider|null  $applications  Used to resolve the default application id.
      */
-    public function __construct(protected array $config)
-    {
-        $this->keys = new RosterKeys($config['key_prefix'] ?? 'roster');
+    public function __construct(
+        protected array $config,
+        protected ?ApplicationProvider $applications = null,
+    ) {
+        $this->keys = RosterKeys::fromConfig($config);
     }
 
     /**
@@ -42,11 +57,11 @@ class RoomRoster
      *
      * @return list<string>
      */
-    public function users(string $channel): array
+    public function users(string $channel, ?string $appId = null): array
     {
         $users = [];
 
-        foreach ($this->hashes($this->keys->scanPattern($channel)) as $hash) {
+        foreach ($this->hashes($this->nodeKeys($channel, $appId)) as $hash) {
             foreach ($hash as $userId) {
                 if ($userId !== '') {
                     $users[$userId] = true;
@@ -54,7 +69,9 @@ class RoomRoster
             }
         }
 
-        return array_keys($users);
+        // PHP coerces numeric-string array keys ("42") to ints, so the ids are
+        // cast back to make this the list<string> the signature promises.
+        return array_map('strval', array_keys($users));
     }
 
     /**
@@ -62,33 +79,33 @@ class RoomRoster
      *
      * @return list<string>
      */
-    public function sockets(string $channel): array
+    public function sockets(string $channel, ?string $appId = null): array
     {
         $sockets = [];
 
-        foreach ($this->hashes($this->keys->scanPattern($channel)) as $hash) {
+        foreach ($this->hashes($this->nodeKeys($channel, $appId)) as $hash) {
             foreach (array_keys($hash) as $socketId) {
                 $sockets[$socketId] = true;
             }
         }
 
-        return array_keys($sockets);
+        return array_map('strval', array_keys($sockets));
     }
 
     /**
      * The number of distinct users online in a channel.
      */
-    public function userCount(string $channel): int
+    public function userCount(string $channel, ?string $appId = null): int
     {
-        return count($this->users($channel));
+        return count($this->users($channel, $appId));
     }
 
     /**
      * The number of sockets online in a channel.
      */
-    public function socketCount(string $channel): int
+    public function socketCount(string $channel, ?string $appId = null): int
     {
-        return count($this->sockets($channel));
+        return count($this->sockets($channel, $appId));
     }
 
     /**
@@ -98,51 +115,135 @@ class RoomRoster
      * non-presence channels, where "sockets" and "connections" are the same
      * thing and there is no presence user to speak of.
      */
-    public function connectionCount(string $channel): int
+    public function connectionCount(string $channel, ?string $appId = null): int
     {
-        return $this->socketCount($channel);
+        return $this->socketCount($channel, $appId);
     }
 
     /**
      * Determine whether a channel has at least one connection.
      */
-    public function isOccupied(string $channel): bool
+    public function isOccupied(string $channel, ?string $appId = null): bool
     {
-        return $this->keysMatching($this->keys->scanPattern($channel)) !== [];
+        return $this->nodeKeys($channel, $appId) !== [];
     }
 
     /**
      * Determine whether a user is online in a channel.
      */
-    public function isOnline(string $channel, string $userId): bool
+    public function isOnline(string $channel, string $userId, ?string $appId = null): bool
     {
-        return in_array($userId, $this->users($channel), true);
+        return in_array($userId, $this->users($channel, $appId), true);
     }
 
     /**
-     * Every channel that currently has at least one member.
+     * Every channel of an application that currently has at least one member.
+     *
+     * While the legacy fallback is on, channels found only under a pre-0.3.0
+     * key are listed too. Those keys carry no application, so on a server with
+     * several applications they are reported for each of them until the last
+     * pre-0.3.0 node is gone; see the README upgrade section.
      *
      * @return list<string>
      */
-    public function occupiedChannels(): array
+    public function occupiedChannels(?string $appId = null): array
     {
+        $app = $this->appId($appId);
+
         $channels = [];
 
-        foreach ($this->keysMatching($this->keys->allPattern()) as $key) {
-            $channels[$this->keys->channelFromKey($key)] = true;
+        foreach ($this->keysMatching($this->keys->appPattern($app)) as $key) {
+            $channel = $this->keys->channelFromKey($app, $key);
+
+            if ($channel !== null) {
+                $channels[$channel] = true;
+            }
         }
 
-        return array_keys($channels);
+        if ($this->keys->legacyFallback()) {
+            foreach ($this->keysMatching($this->keys->legacyAllPattern()) as $key) {
+                $channel = $this->keys->legacyChannelFromKey($key);
+
+                if ($channel !== null) {
+                    $channels[$channel] = true;
+                }
+            }
+        }
+
+        return array_map('strval', array_keys($channels));
     }
 
     /**
-     * Yield the HGETALL of every key matching a pattern.
+     * The keys to read for a channel, one per node, app-scoped key first.
      *
+     * This is the dual-read window in one place: a node that writes the
+     * app-scoped key is served from it, and a node that has not been upgraded
+     * yet is served from its pre-0.3.0 key. Membership is per node, so taking
+     * the app-scoped key of every node plus the legacy key of every node that
+     * has none can never double count a socket, and never drops a node.
+     *
+     * @return list<string>
+     */
+    protected function nodeKeys(string $channel, ?string $appId): array
+    {
+        $keys = [];
+
+        foreach ($this->keysMatching($this->keys->scanPattern($this->appId($appId), $channel)) as $key) {
+            $keys[$this->keys->nodeFromKey($key)] = $key;
+        }
+
+        if ($this->keys->legacyFallback()) {
+            foreach ($this->keysMatching($this->keys->legacyScanPattern($channel)) as $key) {
+                if (! $this->keys->isLegacyKeyFor($channel, $key)) {
+                    continue;
+                }
+
+                $keys[$this->keys->nodeFromKey($key)] ??= $key;
+            }
+        }
+
+        return array_values($keys);
+    }
+
+    /**
+     * Resolve the application id to read, falling back to the sole app.
+     */
+    protected function appId(?string $appId): string
+    {
+        if ($appId !== null && $appId !== '') {
+            return $appId;
+        }
+
+        return $this->defaultAppId ??= $this->soleApplicationId();
+    }
+
+    /**
+     * The id of the only configured application.
+     *
+     * @throws InvalidArgumentException when the server does not have exactly one.
+     */
+    protected function soleApplicationId(): string
+    {
+        $applications = $this->applications?->all();
+
+        if ($applications !== null && $applications->count() === 1) {
+            return $applications->first()->id();
+        }
+
+        throw new InvalidArgumentException(
+            'The roster could not resolve a default application. Pass the application id explicitly, for example $roster->users($channel, $appId).',
+        );
+    }
+
+    /**
+     * Yield the HGETALL of every given key.
+     *
+     * @param  list<string>  $keys
      * @return iterable<array<string, string>>
      */
-    protected function hashes(string $pattern): iterable
+    protected function hashes(array $keys): iterable
     {
-        foreach ($this->keysMatching($pattern) as $key) {
+        foreach ($keys as $key) {
             yield $this->client()->hgetall($key);
         }
     }
@@ -174,41 +275,6 @@ class RoomRoster
      */
     protected function client(): Client
     {
-        return $this->client ??= new Client($this->parameters());
-    }
-
-    /**
-     * Translate the connection config into predis connection parameters.
-     *
-     * @return array<string, mixed>|string
-     */
-    protected function parameters(): array|string
-    {
-        $server = $this->config['connection'] ?? [];
-
-        if (! empty($server['url'])) {
-            return $server['url'];
-        }
-
-        $parameters = [
-            'scheme' => 'tcp',
-            'host' => $server['host'] ?? '127.0.0.1',
-            'port' => (int) ($server['port'] ?? 6379),
-            'database' => (int) ($server['database'] ?? 0),
-        ];
-
-        if (! empty($server['username'])) {
-            $parameters['username'] = $server['username'];
-        }
-
-        if (! empty($server['password'])) {
-            $parameters['password'] = $server['password'];
-        }
-
-        if (! empty($server['timeout'])) {
-            $parameters['timeout'] = (float) $server['timeout'];
-        }
-
-        return $parameters;
+        return $this->client ??= new Client(RosterConnection::parameters($this->config));
     }
 }

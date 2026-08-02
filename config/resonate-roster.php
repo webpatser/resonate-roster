@@ -31,11 +31,31 @@ return [
     |--------------------------------------------------------------------------
     |
     | Every roster key is namespaced under this prefix. A presence channel C
-    | on node N is stored at "{prefix}:{C}:{N}". Avoid colons in the prefix.
+    | of application A on node N is stored at "{prefix}:{A}:{C}:{N}". Avoid
+    | colons in the prefix.
     |
     */
 
     'key_prefix' => env('RESONATE_ROSTER_PREFIX', 'roster'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Legacy key fallback (the upgrade window)
+    |--------------------------------------------------------------------------
+    |
+    | Before 0.3.0 a roster key was "{prefix}:{C}:{N}", with no application
+    | segment. While this is true, readers that find no app-scoped key for a
+    | node fall back to that node's pre-0.3.0 key, so a rolling deploy of
+    | mixed old and new nodes keeps reporting correct membership.
+    |
+    | Set it to false once every node runs 0.3.0 or later and no pre-0.3.0
+    | keys remain (`php artisan resonate-roster:migrate-keys` reports that,
+    | and can rename or prune whatever is left). Turning it off is what makes
+    | occupancy strictly per application. See the README upgrade section.
+    |
+    */
+
+    'legacy_fallback' => (bool) env('RESONATE_ROSTER_LEGACY_FALLBACK', true),
 
     /*
     |--------------------------------------------------------------------------
