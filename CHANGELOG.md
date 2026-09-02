@@ -5,6 +5,14 @@ All notable changes to `webpatser/resonate-roster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Require `webpatser/fledge-fiber` `^13.29` (was `^13.4`), and build the plugin's connection with `RedisConfig::fromParameters()` rather than a hand-assembled `redis://user:pass@host:port/db` string. TLS, unix socket paths, ACL usernames, `read_timeout`, the retry settings, the client name and tcp keepalive reach the connection now; the URI form silently dropped all of them, and a password containing a reserved character failed to authenticate at all. A configured `url` still wins.
+- `connection.scheme` (`RESONATE_ROSTER_REDIS_SCHEME`, default `tcp`) selects the transport for both halves of the package. `RosterConnection::parameters()` honours it too, so the predis reader and the async writer cannot end up one plaintext and one encrypted.
+- `RoomRoster::users()` and `sockets()` read every node key in one pipelined round trip, through the same helper `snapshot()` already used. They previously issued one blocking `HGETALL` per node per call.
+
 ## [0.3.2] - 2026-08-02
 
 ### Fixed

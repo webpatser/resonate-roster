@@ -388,16 +388,20 @@ class RoomRoster
     }
 
     /**
-     * Yield the HGETALL of every given key.
+     * Read the HGETALL of every given key in a single round trip.
+     *
+     * The per-channel readers used to walk the node keys one blocking HGETALL
+     * at a time, which cost one round trip per node on every call while
+     * {@see snapshot()} was already reading its keys in one pipelined batch.
+     * They now share that batch, so a read costs one sweep and one round trip
+     * whatever the node count is.
      *
      * @param  list<string>  $keys
-     * @return iterable<array<string, string>>
+     * @return list<array<array-key, mixed>>
      */
-    protected function hashes(array $keys): iterable
+    protected function hashes(array $keys): array
     {
-        foreach ($keys as $key) {
-            yield $this->client()->hgetall($key);
-        }
+        return $keys === [] ? [] : $this->pipelinedHashes($keys);
     }
 
     /**

@@ -174,6 +174,8 @@ Leave it out and the **sole configured application** is used, so a single-app se
 
 Override any of these per environment with `RESONATE_ROSTER_*` variables (see the published config file).
 
+The `connection` block takes Laravel's own Redis connection keys and is handed to fledge-fiber verbatim, so `scheme` (`tcp`, `tls`/`rediss`, `unix`), `read_timeout`, `name`, `tcp_keepalive` and the retry keys all work alongside host, port, credentials and database. Set `scheme` to `tls` (or point `url` at a `rediss://` address) for a managed Redis that requires encryption.
+
 ## Upgrading to the app-scoped key schema
 
 Before 0.3.0 a roster key was `{prefix}:{C}:{N}`, with no application segment. From 0.3.0 it is `{prefix}:{A}:{C}:{N}`. A naive deploy would orphan every existing key: the new code would look for app-scoped keys, find none, and report every presence channel as empty until traffic repopulated it.
