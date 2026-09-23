@@ -233,7 +233,7 @@ Set `RESONATE_ROSTER_LEGACY_FALLBACK=false` and restart (`resonate:reload` works
 ## Requirements
 
 - PHP 8.5+
-- Resonate 0.4+
+- Resonate 0.7+
 - A Redis server reachable from both the Resonate process and your Laravel app
 
 ## Testing
