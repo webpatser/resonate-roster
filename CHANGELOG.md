@@ -5,6 +5,12 @@ All notable changes to `webpatser/resonate-roster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-10-24
+
+### Fixed
+
+- `nodeKeys` now confirms the exact channel of every scanned key. The `SCAN` glob for a channel also matched channels extending it with a colon (`presence-room.7:x`), which leaked into `users()`, `userCount()` and `isOnline()` of `presence-room.7`.
+
 ## [0.7.0] - 2026-09-23
 
 ### Changed
