@@ -335,8 +335,15 @@ class RoomRoster
     protected function nodeKeys(string $channel, ?string $appId): array
     {
         $keys = [];
+        $appId = $this->appId($appId);
 
-        foreach ($this->keysMatching($this->keys->scanPattern($this->appId($appId), $channel)) as $key) {
+        foreach ($this->keysMatching($this->keys->scanPattern($appId, $channel)) as $key) {
+            // The scan pattern is a glob prefix: `presence-room.7:x` also matches
+            // the pattern for `presence-room.7`, so confirm the channel exactly.
+            if ($this->keys->channelFromKey($appId, $key) !== $channel) {
+                continue;
+            }
+
             $keys[$this->keys->nodeFromKey($key)] = $key;
         }
 

@@ -253,3 +253,14 @@ it('refuses to guess the application when several are configured', function () {
     expect(fn () => roster()->users('presence-room'))
         ->toThrow(InvalidArgumentException::class, 'could not resolve a default application');
 });
+
+it('does not read a channel whose name extends another with a colon', function () {
+    $this->redis->hset('roster-test:app-id:presence-room.7:node-a', 'sock-1', 'u-alice');
+    $this->redis->hset('roster-test:app-id:presence-room.7:x:node-b', 'sock-2', 'u-mallory');
+
+    $roster = roster();
+
+    expect($roster->users('presence-room.7', 'app-id'))->toBe(['u-alice'])
+        ->and($roster->userCount('presence-room.7', 'app-id'))->toBe(1)
+        ->and($roster->isOnline('presence-room.7', 'u-mallory', 'app-id'))->toBeFalse();
+});
