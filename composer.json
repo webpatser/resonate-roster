@@ -16,7 +16,7 @@
         "illuminate/support": "^13.0",
         "predis/predis": "^2.2",
         "webpatser/fledge-fiber": "^13.38",
-        "webpatser/resonate": "^0.7"
+        "webpatser/resonate": "^1.0"
     },
     "require-dev": {
         "larastan/larastan": "^3.10",

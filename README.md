@@ -192,7 +192,7 @@ See [UPGRADE.md](UPGRADE.md). Coming from a release older than 0.3.0, upgrade th
 ## Requirements
 
 - PHP 8.5+
-- Resonate 0.7+
+- Resonate 1.0+
 - A Redis server reachable from both the Resonate process and your Laravel app
 
 ## Testing
