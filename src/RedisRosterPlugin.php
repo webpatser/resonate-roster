@@ -193,8 +193,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
      * Every key it touches is built from the application it is reconciling
      * for, so the pass is confined to one application's own keys: it can never
      * delete another application's members, even when both serve a channel of
-     * the same name. It never touches a pre-0.3.0 key either, so during a
-     * rolling upgrade an old node keeps owning its own keys.
+     * the same name. It never touches a pre-0.3.0 unscoped key either.
      */
     protected function reconcile(): void
     {

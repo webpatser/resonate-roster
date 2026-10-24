@@ -270,8 +270,8 @@ it('does not touch a pre-0.3.0 key while reconciling', function () {
     $context = new PluginContext(app(ChannelManager::class));
     $channelName = 'presence-room-'.uniqid();
 
-    // A node that has not been upgraded yet owns this key; the upgraded node
-    // must leave it alone so the two schemas coexist during a rolling deploy.
+    // An unscoped key left behind by a pre-0.3.0 node is not the plugin's to
+    // reconcile: it only ever touches keys of the application it serves.
     $this->redis->hset('roster-test:'.$channelName.':node-old', 'sock-old', 'u-old');
 
     $alice = new FakeConnection('sock-alice', $app);

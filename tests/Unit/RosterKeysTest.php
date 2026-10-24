@@ -53,46 +53,23 @@ it('extracts the channel name even when the prefix contains a colon', function (
         ->toBe('presence-room');
 });
 
-it('does not extract a channel from another application or a legacy key', function () {
+it('does not extract a channel from another application or an unscoped key', function () {
     $keys = new RosterKeys('roster');
 
     expect($keys->channelFromKey('app-1', 'roster:app-2:presence-room:web-1-9001'))->toBeNull()
         ->and($keys->channelFromKey('app-1', 'roster:app-1:web-1-9001'))->toBeNull();
 });
 
-it('extracts the node id from a key of either schema', function () {
+it('extracts the node id from a key', function () {
     $keys = new RosterKeys('roster');
 
-    expect($keys->nodeFromKey('roster:app-1:presence-room:web-1-9001'))->toBe('web-1-9001')
-        ->and($keys->nodeFromKey('roster:presence-room:web-1-9001'))->toBe('web-1-9001');
+    expect($keys->nodeFromKey('roster:app-1:presence-room:web-1-9001'))->toBe('web-1-9001');
 });
 
-it('builds the pre-0.3.0 keys and patterns for the fallback', function () {
+it('builds the app pattern', function () {
     $keys = new RosterKeys('roster');
 
-    expect($keys->legacyHashKey('presence-room', 'web-1-1'))->toBe('roster:presence-room:web-1-1')
-        ->and($keys->legacyScanPattern('presence-room'))->toBe('roster:presence-room:*')
-        ->and($keys->legacyAllPattern())->toBe('roster:*')
-        ->and($keys->appPattern('app-1'))->toBe('roster:app-1:*');
-});
-
-it('tells a pre-0.3.0 key of a channel apart from an app-scoped one', function () {
-    $keys = new RosterKeys('roster');
-
-    // The pathological case: an application whose id is the channel name. Its
-    // app-scoped key still matches the legacy SCAN pattern, so the shape check
-    // is what keeps it out of the fallback.
-    expect($keys->isLegacyKeyFor('presence-room', 'roster:presence-room:web-1-1'))->toBeTrue()
-        ->and($keys->isLegacyKeyFor('presence-room', 'roster:presence-room:presence-x:web-1-1'))->toBeFalse()
-        ->and($keys->isLegacyKeyFor('presence-room', 'roster:presence-roomier:web-1-1'))->toBeFalse();
-});
-
-it('reads the channel out of a pre-0.3.0 key only', function () {
-    $keys = new RosterKeys('roster');
-
-    expect($keys->legacyChannelFromKey('roster:presence-room:web-1-1'))->toBe('presence-room')
-        ->and($keys->legacyChannelFromKey('roster:app-1:presence-room:web-1-1'))->toBeNull()
-        ->and($keys->legacyChannelFromKey('other:presence-room:web-1-1'))->toBeNull();
+    expect($keys->appPattern('app-1'))->toBe('roster:app-1:*');
 });
 
 it('honours a custom prefix', function () {
@@ -103,18 +80,16 @@ it('honours a custom prefix', function () {
 });
 
 it('builds itself from the roster config', function () {
-    $keys = RosterKeys::fromConfig(['key_prefix' => 'mg', 'legacy_fallback' => false]);
+    $keys = RosterKeys::fromConfig(['key_prefix' => 'mg']);
 
-    expect($keys->prefix())->toBe('mg')
-        ->and($keys->legacyFallback())->toBeFalse();
+    expect($keys->prefix())->toBe('mg');
 });
 
-it('defaults to the published prefix and an open fallback window', function () {
+it('defaults to the published prefix', function () {
     $keys = RosterKeys::fromConfig([]);
 
     expect($keys->prefix())->toBe(RosterKeys::DEFAULT_PREFIX)
-        ->and(RosterKeys::DEFAULT_PREFIX)->toBe('roster')
-        ->and($keys->legacyFallback())->toBeTrue();
+        ->and(RosterKeys::DEFAULT_PREFIX)->toBe('roster');
 });
 
 it('generates a colon-free node id', function () {

@@ -104,42 +104,7 @@ it('keeps two applications that share a channel name apart', function () {
         ->and($roster->isOnline('presence-lobby', 'u-bob', 'app-id'))->toBeFalse();
 });
 
-it('falls back to a pre-0.3.0 key when no app-scoped key exists', function () {
-    // Written by a node that has not been upgraded yet.
-    $this->redis->hset('roster-test:presence-room:node-old', 'sock-1', 'u-alice');
-
-    $roster = roster();
-
-    expect($roster->users('presence-room', 'app-id'))->toBe(['u-alice'])
-        ->and($roster->socketCount('presence-room', 'app-id'))->toBe(1)
-        ->and($roster->isOccupied('presence-room', 'app-id'))->toBeTrue()
-        ->and($roster->occupiedChannels('app-id'))->toContain('presence-room');
-});
-
-it('prefers the app-scoped key over the pre-0.3.0 key of the same node', function () {
-    $this->redis->hset('roster-test:presence-room:node-a', 'sock-stale', 'u-stale');
-    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
-
-    $roster = roster();
-
-    expect($roster->users('presence-room', 'app-id'))->toBe(['u-alice'])
-        ->and($roster->sockets('presence-room', 'app-id'))->toBe(['sock-1']);
-});
-
-it('reads an upgraded and a not-yet-upgraded node together mid-deploy', function () {
-    // node-a already runs the new schema, node-b has not been restarted yet.
-    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
-    $this->redis->hset('roster-test:presence-room:node-b', 'sock-2', 'u-bob');
-
-    $roster = roster();
-
-    expect($roster->users('presence-room', 'app-id'))->toEqualCanonicalizing(['u-alice', 'u-bob'])
-        ->and($roster->socketCount('presence-room', 'app-id'))->toBe(2);
-});
-
-it('ignores pre-0.3.0 keys once the fallback window is closed', function () {
-    config()->set('resonate-roster.legacy_fallback', false);
-
+it('ignores pre-0.3.0 unscoped keys', function () {
     $this->redis->hset('roster-test:presence-room:node-old', 'sock-1', 'u-alice');
     $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-2', 'u-bob');
 
@@ -197,28 +162,7 @@ it('keeps two applications that share a channel name apart in a snapshot', funct
         ->and($second['presence-lobby']['users'])->toBe(['u-carol']);
 });
 
-it('snapshots a pre-0.3.0 node alongside an upgraded one', function () {
-    // node-a already writes the app-scoped key, node-b has not restarted yet.
-    $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
-    $this->redis->hset('roster-test:presence-room:node-b', 'sock-2', 'u-bob');
-
-    // A channel that only a not-yet-upgraded node knows about at all.
-    $this->redis->hset('roster-test:presence-old:node-b', 'sock-3', 'u-carol');
-
-    // The same node's stale pre-0.3.0 key must not be counted twice.
-    $this->redis->hset('roster-test:presence-room:node-a', 'sock-stale', 'u-stale');
-
-    $snapshot = roster()->snapshot('app-id');
-
-    expect($snapshot['presence-room']['connections'])->toBe(2)
-        ->and($snapshot['presence-room']['users'])->toEqualCanonicalizing(['u-alice', 'u-bob'])
-        ->and($snapshot['presence-old']['connections'])->toBe(1)
-        ->and($snapshot['presence-old']['users'])->toBe(['u-carol']);
-});
-
-it('ignores pre-0.3.0 keys in a snapshot once the fallback window is closed', function () {
-    config()->set('resonate-roster.legacy_fallback', false);
-
+it('ignores pre-0.3.0 unscoped keys in a snapshot', function () {
     $this->redis->hset('roster-test:presence-old:node-old', 'sock-1', 'u-alice');
     $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-2', 'u-bob');
 

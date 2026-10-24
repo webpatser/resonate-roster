@@ -137,11 +137,6 @@ class RoomRoster
     /**
      * Every channel of an application that currently has at least one member.
      *
-     * While the legacy fallback is on, channels found only under a pre-0.3.0
-     * key are listed too. Those keys carry no application, so on a server with
-     * several applications they are reported for each of them until the last
-     * pre-0.3.0 node is gone; see the README upgrade section.
-     *
      * @return list<string>
      */
     public function occupiedChannels(?string $appId = null): array
@@ -158,16 +153,6 @@ class RoomRoster
             }
         }
 
-        if ($this->keys->legacyFallback()) {
-            foreach ($this->keysMatching($this->keys->legacyAllPattern()) as $key) {
-                $channel = $this->keys->legacyChannelFromKey($key);
-
-                if ($channel !== null) {
-                    $channels[$channel] = true;
-                }
-            }
-        }
-
         return array_map('strval', array_keys($channels));
     }
 
@@ -178,9 +163,8 @@ class RoomRoster
      * application at once rather than one channel at a time. Asking the
      * per-channel methods for C channels costs 1 + 2C full keyspace sweeps,
      * which at a few hundred channels is a few hundred sweeps per poll against
-     * the same Redis the socket server is using. This is one sweep (two while
-     * the legacy fallback window is open) plus a single pipelined batch of
-     * HGETALLs, because one sweep already yields everything the answer needs:
+     * the same Redis the socket server is using. This is one sweep plus a single
+     * pipelined batch of HGETALLs, because one sweep already yields everything the answer needs:
      * the hash values are the presence user ids and the field count is the
      * connection count.
      *
@@ -258,11 +242,9 @@ class RoomRoster
     /**
      * The keys to read for every channel of an application, node by node.
      *
-     * The dual-read window {@see nodeKeys()} implements for one channel,
-     * applied to a whole application in one pass: the app-scoped key of every
-     * node that has one, plus the pre-0.3.0 key of every node that has none.
-     * Membership is per node, so this can neither double count a socket nor
-     * drop a node, and it costs the same two sweeps at any channel count.
+     * What {@see nodeKeys()} does for one channel, applied to a whole
+     * application in one pass, so it costs a single sweep at any channel
+     * count.
      *
      * @return array<string, array<string, string>> Channel name => node id => key.
      */
@@ -275,16 +257,6 @@ class RoomRoster
 
             if ($channel !== null) {
                 $keys[$channel][$this->keys->nodeFromKey($key)] = $key;
-            }
-        }
-
-        if ($this->keys->legacyFallback()) {
-            foreach ($this->keysMatching($this->keys->legacyAllPattern()) as $key) {
-                $channel = $this->keys->legacyChannelFromKey($key);
-
-                if ($channel !== null) {
-                    $keys[$channel][$this->keys->nodeFromKey($key)] ??= $key;
-                }
             }
         }
 
@@ -322,13 +294,7 @@ class RoomRoster
     }
 
     /**
-     * The keys to read for a channel, one per node, app-scoped key first.
-     *
-     * This is the dual-read window in one place: a node that writes the
-     * app-scoped key is served from it, and a node that has not been upgraded
-     * yet is served from its pre-0.3.0 key. Membership is per node, so taking
-     * the app-scoped key of every node plus the legacy key of every node that
-     * has none can never double count a socket, and never drops a node.
+     * The keys to read for a channel of an application, one per node.
      *
      * @return list<string>
      */
@@ -345,16 +311,6 @@ class RoomRoster
             }
 
             $keys[$this->keys->nodeFromKey($key)] = $key;
-        }
-
-        if ($this->keys->legacyFallback()) {
-            foreach ($this->keysMatching($this->keys->legacyScanPattern($channel)) as $key) {
-                if (! $this->keys->isLegacyKeyFor($channel, $key)) {
-                    continue;
-                }
-
-                $keys[$this->keys->nodeFromKey($key)] ??= $key;
-            }
         }
 
         return array_values($keys);

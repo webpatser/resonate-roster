@@ -15,12 +15,8 @@ namespace Webpatser\ResonateRoster;
  * the same channel name (both serving a "presence-lobby", say) in separate
  * hashes. Before 0.3.0 the key was "{prefix}:{C}:{N}" with no application
  * segment, so those two applications shared one hash and each one's heartbeat
- * reconcile deleted the other's members as stale.
- *
- * The pre-0.3.0 layout is still built by the legacy* methods. Readers consult
- * it as a fallback for the length of the upgrade window, which is what lets a
- * rolling deploy of mixed old and new nodes report correct membership; see
- * the `legacy_fallback` config flag and the README upgrade section.
+ * reconcile deleted the other's members as stale. 1.0 no longer reads that
+ * layout at all; see UPGRADE.md for the path from a pre-0.3.0 deployment.
  */
 class RosterKeys
 {
@@ -37,11 +33,9 @@ class RosterKeys
      * Create a new key schema instance.
      *
      * @param  string  $prefix  Namespace for every roster key.
-     * @param  bool  $legacyFallback  Whether readers may fall back to the pre-0.3.0 unscoped keys.
      */
     public function __construct(
         protected string $prefix = self::DEFAULT_PREFIX,
-        protected bool $legacyFallback = true,
     ) {
         //
     }
@@ -50,7 +44,7 @@ class RosterKeys
      * Build the schema from the "resonate-roster" config array.
      *
      * Every reader of roster keys should build its schema this way, so the
-     * prefix and the fallback window are configured in exactly one place.
+     * prefix is configured in exactly one place.
      *
      * @param  array<string, mixed>  $config
      */
@@ -58,10 +52,7 @@ class RosterKeys
     {
         $prefix = $config['key_prefix'] ?? self::DEFAULT_PREFIX;
 
-        return new self(
-            is_string($prefix) ? $prefix : self::DEFAULT_PREFIX,
-            (bool) ($config['legacy_fallback'] ?? true),
-        );
+        return new self(is_string($prefix) ? $prefix : self::DEFAULT_PREFIX);
     }
 
     /**
@@ -70,14 +61,6 @@ class RosterKeys
     public function prefix(): string
     {
         return $this->prefix;
-    }
-
-    /**
-     * Whether readers should fall back to the pre-0.3.0 unscoped keys.
-     */
-    public function legacyFallback(): bool
-    {
-        return $this->legacyFallback;
     }
 
     /**
@@ -120,7 +103,7 @@ class RosterKeys
      * itself has colons.
      *
      * Returns null when the key does not belong to that application, or has
-     * no channel and node segments at all (a pre-0.3.0 key, for instance).
+     * no channel and node segments at all.
      */
     public function channelFromKey(string $appId, string $key): ?string
     {
@@ -138,7 +121,7 @@ class RosterKeys
     }
 
     /**
-     * Extract the node id from a full roster key, of either schema.
+     * Extract the node id from a full roster key.
      *
      * The node id is colon-free, so it is always the final segment.
      */
@@ -147,85 +130,6 @@ class RosterKeys
         $lastColon = strrpos($key, ':');
 
         return $lastColon === false ? $key : substr($key, $lastColon + 1);
-    }
-
-    /**
-     * The pre-0.3.0 hash key for a channel on a node, with no application.
-     *
-     * Kept so readers can serve data written by a node that has not been
-     * upgraded yet. Nothing writes this key any more.
-     */
-    public function legacyHashKey(string $channel, string $node): string
-    {
-        return $this->prefix.':'.$channel.':'.$node;
-    }
-
-    /**
-     * The SCAN pattern matching every pre-0.3.0 key for a single channel.
-     */
-    public function legacyScanPattern(string $channel): string
-    {
-        return $this->prefix.':'.$this->escapeGlob($channel).':*';
-    }
-
-    /**
-     * The SCAN pattern matching every roster key under the prefix.
-     *
-     * It matches both schemas, so callers filter the result themselves with
-     * {@see legacyChannelFromKey()} or {@see channelFromKey()}.
-     */
-    public function legacyAllPattern(): string
-    {
-        return $this->prefix.':*';
-    }
-
-    /**
-     * Determine whether a key is the pre-0.3.0 key of a known channel.
-     *
-     * Exact even for a channel name containing colons: the channel is known,
-     * so all that is left to check is that a single colon-free node segment
-     * follows it. This is what keeps {@see legacyScanPattern()} from adopting
-     * an app-scoped key of an application whose id equals the channel name.
-     */
-    public function isLegacyKeyFor(string $channel, string $key): bool
-    {
-        $head = $this->prefix.':'.$channel.':';
-
-        if (! str_starts_with($key, $head)) {
-            return false;
-        }
-
-        $node = substr($key, strlen($head));
-
-        return $node !== '' && ! str_contains($node, ':');
-    }
-
-    /**
-     * Extract the channel name from a pre-0.3.0 key, or null if not one.
-     *
-     * A pre-0.3.0 key is "{prefix}:{channel}:{node}", so exactly one colon
-     * follows the prefix; an app-scoped key has two and is rejected here.
-     * A channel name containing a colon could not be told apart from an
-     * app-scoped key by shape alone, but the Pusher protocol does not allow
-     * colons in a channel name, so no key the plugin ever wrote has one.
-     */
-    public function legacyChannelFromKey(string $key): ?string
-    {
-        $head = $this->prefix.':';
-
-        if (! str_starts_with($key, $head)) {
-            return null;
-        }
-
-        $rest = substr($key, strlen($head));
-
-        if (substr_count($rest, ':') !== 1) {
-            return null;
-        }
-
-        $channel = substr($rest, 0, (int) strpos($rest, ':'));
-
-        return $channel === '' ? null : $channel;
     }
 
     /**

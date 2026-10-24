@@ -4,13 +4,12 @@ namespace Webpatser\ResonateRoster;
 
 use Illuminate\Support\ServiceProvider;
 use Webpatser\Resonate\Contracts\ApplicationProvider;
-use Webpatser\ResonateRoster\Console\MigrateRosterKeysCommand;
 
 /**
  * Wires the roster into a host Laravel application.
  *
- * It registers the read side ({@see RoomRoster}) as a singleton, registers the
- * key migration command, and publishes the config. The write side
+ * It registers the read side ({@see RoomRoster}) as a singleton and publishes
+ * the config. The write side
  * ({@see RedisRosterPlugin}) is not bound here: it is instantiated by Resonate
  * from the `plugins` array in `config/reverb.php`.
  */
@@ -43,10 +42,6 @@ class RosterServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../config/resonate-roster.php' => $this->app->configPath('resonate-roster.php'),
             ], 'resonate-roster-config');
-
-            $this->commands([
-                MigrateRosterKeysCommand::class,
-            ]);
         }
     }
 }

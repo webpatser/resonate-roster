@@ -5,8 +5,8 @@ namespace Webpatser\ResonateRoster;
 /**
  * Translates the roster's `connection` config block into predis parameters.
  *
- * Shared by every synchronous reader in this package ({@see RoomRoster} and
- * the migrate command) so there is one interpretation of the config block.
+ * Used by every synchronous reader in this package ({@see RoomRoster}) so
+ * there is one interpretation of the config block.
  */
 class RosterConnection
 {
