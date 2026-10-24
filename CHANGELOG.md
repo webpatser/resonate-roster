@@ -5,11 +5,33 @@ All notable changes to `webpatser/resonate-roster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-24
+
+### Removed
+
+- The pre-0.3.0 key fallback: the `legacy_fallback` config key (`RESONATE_ROSTER_LEGACY_FALLBACK`), the `RosterKeys::legacy*()` methods and `isLegacyKeyFor()`, and the legacy read branches in `RoomRoster::users()`, `occupiedChannels()` and `snapshot()`. Readers only consult app-scoped keys.
+- The `resonate-roster:migrate-keys` command.
+
+### Changed
+
+- Require `webpatser/resonate` `^1.0` (was `^0.7`).
+
+### Breaking
+
+- A pre-0.3.0 unscoped key is no longer read. Coming from a release older than 0.3.0, upgrade through 0.7.x first and run the key migration there; see [UPGRADE.md](UPGRADE.md).
+- The `RosterKeys` constructor takes only the prefix.
+
 ## [0.7.2] - 2026-10-24
 
 ### Fixed
 
 - `nodeKeys` now confirms the exact channel of every scanned key. The `SCAN` glob for a channel also matched channels extending it with a colon (`presence-room.7:x`), which leaked into `users()`, `userCount()` and `isOnline()` of `presence-room.7`.
+
+## [0.7.1] - 2026-10-22
+
+### Changed
+
+- Require `webpatser/fledge-fiber` `^13.38`.
 
 ## [0.7.0] - 2026-09-23
 
@@ -152,6 +174,14 @@ Initial release.
   the `resonate-roster` config (`vendor:publish --tag=resonate-roster-config`).
 - Configurable Redis connection, key prefix, key TTL, and heartbeat interval.
 
+[1.0.0]: https://github.com/webpatser/resonate-roster/compare/v0.7.2...v1.0.0
+[0.7.2]: https://github.com/webpatser/resonate-roster/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/webpatser/resonate-roster/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/webpatser/resonate-roster/compare/v0.4.1...v0.7.0
+[0.4.1]: https://github.com/webpatser/resonate-roster/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/webpatser/resonate-roster/compare/v0.3.2...v0.4.0
+[0.3.2]: https://github.com/webpatser/resonate-roster/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/webpatser/resonate-roster/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/webpatser/resonate-roster/compare/v0.2.3...v0.3.0
 [0.2.3]: https://github.com/webpatser/resonate-roster/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/webpatser/resonate-roster/compare/v0.2.1...v0.2.2
