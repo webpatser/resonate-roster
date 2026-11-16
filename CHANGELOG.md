@@ -5,6 +5,13 @@ All notable changes to `webpatser/resonate-roster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A per app+channel node index set (`RosterKeys::nodeIndexKey()`, key `{prefix}-nodes:{appId}:{channel}`) kept in step with the roster hashes and their TTL; removal uses a Lua script (`EVAL`/`EVALSHA` must be allowed under ACLs).
+
+
 ## [1.0.0] - 2026-10-24
 
 ### Removed

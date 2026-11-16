@@ -72,6 +72,27 @@ class RosterKeys
     }
 
     /**
+     * The set key indexing which nodes hold a hash for one channel of one app.
+     *
+     * The set is "{prefix}-nodes:{appId}:{channel}" and its members are node
+     * ids, so a reader turns a member into that node's hash with
+     * {@see hashKey()}( $appId, $channel, $member ) instead of a SCAN.
+     *
+     * The "-nodes" suffix on the prefix keeps the set outside every pattern
+     * this schema hands out ({@see scanPattern()}, {@see appPattern()}): those
+     * all start with "{prefix}:", so a SCAN reader never mistakes the set for
+     * a node's hash.
+     *
+     * A member may outlive its hash when a node dies without cleaning up (the
+     * hash expires by TTL while live nodes keep refreshing the set), so a
+     * reader must treat a missing hash as "no members on that node".
+     */
+    public function nodeIndexKey(string $appId, string $channel): string
+    {
+        return $this->prefix.'-nodes:'.$appId.':'.$channel;
+    }
+
+    /**
      * The SCAN pattern matching every node's key for one channel of one app.
      *
      * The trailing ":*" keeps "presence-foo" from matching "presence-foobar":

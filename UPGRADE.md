@@ -1,5 +1,11 @@
 # Upgrade Guide
 
+## Unreleased: per-channel node index
+
+The plugin now keeps a Redis set per application and channel, `{prefix}-nodes:{A}:{C}` (`RosterKeys::nodeIndexKey($appId, $channel)`), whose members are the ids of the nodes holding a roster hash for that channel. A node is added when it writes its hash and on every heartbeat, and removed when its hash empties; the set carries the same `ttl` as the hashes. A consumer reads `SMEMBERS` and turns each member into a hash key with `RosterKeys::hashKey($appId, $channel, $member)`, instead of a keyspace `SCAN`. A member can outlive its hash after a node dies without cleaning up, so treat a missing hash as an empty one.
+
+The set is outside the `{prefix}:` namespace, so existing `SCAN` readers never see it. During a rolling deploy the index only lists upgraded nodes, and it is complete one heartbeat after the last node is upgraded; keep `SCAN`-based readers until then. Grant the roster's Redis user `SADD`, `SREM` and `EVAL`/`EVALSHA` if you run with ACLs.
+
 ## From 0.7.x to 1.0
 
 ### Requirements

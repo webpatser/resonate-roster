@@ -28,6 +28,28 @@ use function Fledge\Async\Redis\createRedisClient;
 class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickScheduler
 {
     /**
+     * Drop one socket from a node's hash, and the node from the channel index
+     * once that hash is empty. KEYS: hash, index. ARGV: socket id, node id.
+     */
+    protected const REMOVE_MEMBER_SCRIPT = <<<'LUA'
+        redis.call('HDEL', KEYS[1], ARGV[1])
+        if redis.call('HLEN', KEYS[1]) == 0 then
+            redis.call('SREM', KEYS[2], ARGV[2])
+        end
+        return 1
+        LUA;
+
+    /**
+     * Delete a node's hash and drop the node from the channel index.
+     * KEYS: hash, index. ARGV: node id.
+     */
+    protected const DROP_HASH_SCRIPT = <<<'LUA'
+        redis.call('DEL', KEYS[1])
+        redis.call('SREM', KEYS[2], ARGV[1])
+        return 1
+        LUA;
+
+    /**
      * The server API surface handed in at boot.
      */
     protected PluginContext $context;
@@ -125,6 +147,8 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
 
         $this->redis->getMap($key)->setValue($connection->id(), $this->userId($connection, $channel));
         $this->redis->expireIn($key, $this->ttl);
+
+        $this->indexNode($appId, $name);
     }
 
     /**
@@ -142,8 +166,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         unset($subscriptions[$name]);
         $connection->setState('roster.channels', $subscriptions);
 
-        $this->redis->getMap($this->keys->hashKey($connection->app()->id(), $name, $this->node))
-            ->remove($connection->id());
+        $this->removeMember($connection->app()->id(), $name, $connection->id());
     }
 
     /**
@@ -161,8 +184,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         // PHP coerces numeric-string array keys to int, so the channel name is
         // restored to a string before it is fed back into the key schema.
         foreach (array_keys($subscriptions) as $name) {
-            $this->redis->getMap($this->keys->hashKey($appId, (string) $name, $this->node))
-                ->remove($connection->id());
+            $this->removeMember($appId, (string) $name, $connection->id());
         }
 
         $connection->forgetState('roster.channels');
@@ -231,7 +253,11 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         }
 
         if ($members === []) {
-            $this->redis->delete($key);
+            $this->redis->eval(
+                self::DROP_HASH_SCRIPT,
+                [$key, $this->keys->nodeIndexKey($appId, $name)],
+                [$this->node],
+            );
             $this->forget($appId, $name);
 
             return;
@@ -247,6 +273,40 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
 
         $map->setValues($members);
         $this->redis->expireIn($key, $this->ttl);
+
+        $this->indexNode($appId, $name);
+    }
+
+    /**
+     * Add this node to the channel's node index and refresh the index TTL.
+     *
+     * The index carries the same TTL as the hashes and is refreshed on every
+     * write and every heartbeat, so it lives exactly as long as some node
+     * still holds a hash for the channel.
+     */
+    protected function indexNode(string $appId, string $name): void
+    {
+        $index = $this->keys->nodeIndexKey($appId, $name);
+
+        $this->redis?->getSet($index)->add($this->node);
+        $this->redis?->expireIn($index, $this->ttl);
+    }
+
+    /**
+     * Remove one socket from this node's hash, and this node from the index
+     * once the hash is empty.
+     *
+     * The HDEL, the emptiness check and the SREM run as one script, so a
+     * concurrent subscribe on this node can never land between them and be
+     * left out of the index.
+     */
+    protected function removeMember(string $appId, string $name, string $socketId): void
+    {
+        $this->redis?->eval(
+            self::REMOVE_MEMBER_SCRIPT,
+            [$this->keys->hashKey($appId, $name, $this->node), $this->keys->nodeIndexKey($appId, $name)],
+            [$socketId, $this->node],
+        );
     }
 
     /**
