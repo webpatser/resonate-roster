@@ -25,6 +25,14 @@ A presence channel `C` of application `A` on a Resonate node `N` is stored as a 
 {prefix}:{A}:{C}:{N}    field = socket id    value = presence user id
 ```
 
+Alongside the hashes the plugin maintains a node index, a Redis **set** per channel:
+
+```
+{prefix}-nodes:{A}:{C}    members = node ids
+```
+
+It has the same TTL as the roster hashes and lists the nodes that currently hold a hash for the channel. It lives outside the `{prefix}:` key space, so a `SCAN` over the roster keys never sees it.
+
 For example, two browser tabs from one user plus a second user, all on one node, look like:
 
 ```
@@ -40,7 +48,7 @@ Two things are deliberate here:
 
 **The application is part of the key.** A Resonate process can serve several applications, and nothing stops two of them from using the same channel name. Without the application segment they would share one hash: membership would merge, and each application's heartbeat would delete the other's members as stale. Keys written before 0.3.0 have no application segment and are not read by 1.0; see [UPGRADE.md](UPGRADE.md).
 
-A reader resolves a channel by `SCAN`-ing `{prefix}:{A}:{C}:*`, reading each node's hash, and merging:
+`RoomRoster` resolves a channel by `SCAN`-ing `{prefix}:{A}:{C}:*`, reading each node's hash, and merging. Other readers can use the node index instead: `SMEMBERS` on it gives the node ids, and each id maps to a hash key without a scan (a listed node may have no hash left after a crash, which means no members on that node).
 
 - **sockets online** = every field across the hashes;
 - **users online** = the distinct set of values across the hashes (so a user with three tabs counts once).
@@ -186,7 +194,7 @@ See [UPGRADE.md](UPGRADE.md). Coming from a release older than 0.3.0, upgrade th
 - **Distinct-user semantics.** `users()` deduplicates by the presence `user_id`, so a user on several tabs or several nodes counts once. `sockets()` does not deduplicate.
 - **Eventually consistent.** A missed lifecycle hook is corrected within one `heartbeat_interval`; a hard node crash clears within one `ttl`.
 - **One roster per application.** Keys carry the application id, so two applications serving a channel of the same name keep separate membership, and a heartbeat can only ever rewrite its own application's key.
-- **Not Redis Cluster safe.** Every read discovers node keys with `SCAN`, which on Redis Cluster only walks the node it is sent to. Point the roster at a single Redis (a primary with replicas is fine).
+- **Not Redis Cluster safe.** `RoomRoster` discovers node keys with `SCAN` on every read, which on Redis Cluster only walks the node it is sent to (the node index lets other readers use `SMEMBERS` instead, but the index and the hashes still need to live on one Redis). Point the roster at a single Redis (a primary with replicas is fine).
 - **The roster is product-agnostic.** It mirrors any presence channel. "Chat rooms" are just `presence-chat.{id}` channels; nothing here is chat-specific.
 
 ## Requirements
