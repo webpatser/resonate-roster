@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A per app+channel node index set (`RosterKeys::nodeIndexKey()`, key `{prefix}-nodes:{appId}:{channel}`) kept in step with the roster hashes and their TTL; removal uses a Lua script (`EVAL`/`EVALSHA` must be allowed under ACLs).
+- A per app channel index set (`RosterKeys::channelIndexKey()`, key `{prefix}-channels:{appId}`), written with the node index in one Lua script on subscribe and heartbeat and trimmed in the same script as the node index on leave.
+- The `scan_fallback` config key (`RESONATE_ROSTER_SCAN_FALLBACK`, default `true`). Off, `RoomRoster` reads through the index sets with no `SCAN`: a per-channel read is one `SMEMBERS` plus one pipelined `HGETALL`, `snapshot()` and `occupiedChannels()` are three round trips. On, it sweeps the keyspace as before, which also finds hashes from nodes on the previous release. See [UPGRADE.md](UPGRADE.md) for the two-step rollout.
+
+### Changed
+
+- Adding a node to its channel's node index is now one Lua script together with the channel index (was `SADD` plus `EXPIRE`). The script only ever extends a set's TTL (it compares against `TTL`, works on every Redis version), so a node with a smaller `ttl` no longer shortens a set another node relies on.
+- With `scan_fallback` off, `RoomRoster` skips index entries whose hash has expired and removes them with a script that re-checks inside Redis first. The script is sent outside the read's pipeline; if the server refuses it (read-only replica, ACL without `EVAL`), that reader keeps its connection and stops trimming, and its results stay correct.
+
+### Fixed
+
+- The heartbeat no longer stops tracking a channel that gains a member on this node while the heartbeat is dropping the channel's emptied hash; that member used to fall out of the roster after `ttl` while still connected.
+
+### Notes
+
+- `snapshot()` still reads every hash with `HGETALL`. A counts-only read path (`HLEN` per indexed hash) for consumers such as `webpatser/resonate-pulse` is a deferred follow-up and is not part of this release.
 
 
 ## [1.0.0] - 2026-10-24
