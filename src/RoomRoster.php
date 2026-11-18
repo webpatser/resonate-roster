@@ -5,6 +5,9 @@ namespace Webpatser\ResonateRoster;
 use InvalidArgumentException;
 use Predis\Client;
 use Predis\ClientContextInterface;
+use Predis\Command\RawCommand;
+use Predis\Response\ErrorInterface;
+use Predis\Response\ServerException;
 use Webpatser\Resonate\Contracts\ApplicationProvider;
 
 /**
@@ -14,6 +17,11 @@ use Webpatser\Resonate\Contracts\ApplicationProvider;
  * other backend code: it answers "who is online in channel C of application A"
  * by reading the per-node Redis hashes the {@see RedisRosterPlugin} writes,
  * with no metrics round-trip to the socket server.
+ *
+ * The hashes are found through the index sets the plugin keeps
+ * ({@see RosterKeys::channelIndexKey()}, {@see RosterKeys::nodeIndexKey()}),
+ * or, while the "scan_fallback" config flag is on, with a keyspace SCAN that
+ * also finds hashes written by nodes on a release without the index.
  *
  * Every method takes an optional application id as its last argument. Leave it
  * out on a single-app server and the sole configured application is used; a
@@ -26,6 +34,32 @@ use Webpatser\Resonate\Contracts\ApplicationProvider;
 class RoomRoster
 {
     /**
+     * Drop a node from a channel's node index while its hash is missing, and
+     * the channel from the application's channel index once no node is left.
+     * KEYS: hash, node index, channel index. ARGV: node id, channel.
+     */
+    protected const TRIM_NODE_SCRIPT = <<<'LUA'
+        if redis.call('EXISTS', KEYS[1]) == 0 then
+            redis.call('SREM', KEYS[2], ARGV[1])
+        end
+        if redis.call('SCARD', KEYS[2]) == 0 then
+            redis.call('SREM', KEYS[3], ARGV[2])
+        end
+        return 1
+        LUA;
+
+    /**
+     * Drop a channel from the application's channel index while its node
+     * index is empty. KEYS: node index, channel index. ARGV: channel.
+     */
+    protected const TRIM_CHANNEL_SCRIPT = <<<'LUA'
+        if redis.call('SCARD', KEYS[1]) == 0 then
+            redis.call('SREM', KEYS[2], ARGV[1])
+        end
+        return 1
+        LUA;
+
+    /**
      * The roster key schema.
      */
     protected RosterKeys $keys;
@@ -34,6 +68,11 @@ class RoomRoster
      * The sole configured application id, resolved on first use.
      */
     protected ?string $defaultAppId = null;
+
+    /**
+     * Whether the server refused a trim script, so none is sent again.
+     */
+    protected bool $trimRefused = false;
 
     /**
      * Create a new roster reader.
@@ -59,7 +98,7 @@ class RoomRoster
     {
         $users = [];
 
-        foreach ($this->hashes($this->nodeKeys($channel, $appId)) as $hash) {
+        foreach ($this->channelHashes($channel, $appId) as $hash) {
             foreach ($hash as $userId) {
                 if ($userId !== '') {
                     $users[$userId] = true;
@@ -81,7 +120,7 @@ class RoomRoster
     {
         $sockets = [];
 
-        foreach ($this->hashes($this->nodeKeys($channel, $appId)) as $hash) {
+        foreach ($this->channelHashes($channel, $appId) as $hash) {
             foreach (array_keys($hash) as $socketId) {
                 $sockets[$socketId] = true;
             }
@@ -123,7 +162,11 @@ class RoomRoster
      */
     public function isOccupied(string $channel, ?string $appId = null): bool
     {
-        return $this->nodeKeys($channel, $appId) !== [];
+        if ($this->scanFallback()) {
+            return $this->nodeKeys($channel, $appId) !== [];
+        }
+
+        return $this->channelHashes($channel, $appId) !== [];
     }
 
     /**
@@ -142,6 +185,10 @@ class RoomRoster
     public function occupiedChannels(?string $appId = null): array
     {
         $app = $this->appId($appId);
+
+        if (! $this->scanFallback()) {
+            return array_map('strval', array_keys($this->indexedHashes($app)));
+        }
 
         $channels = [];
 
@@ -163,21 +210,24 @@ class RoomRoster
      * application at once rather than one channel at a time. Asking the
      * per-channel methods for C channels costs 1 + 2C full keyspace sweeps,
      * which at a few hundred channels is a few hundred sweeps per poll against
-     * the same Redis the socket server is using. This is one sweep plus a single
-     * pipelined batch of HGETALLs, because one sweep already yields everything the answer needs:
+     * the same Redis the socket server is using. With the SCAN fallback on this
+     * is one sweep plus a single pipelined batch of HGETALLs; with it off it is
+     * three round trips through the index sets and no SCAN at all. Either way
      * the hash values are the presence user ids and the field count is the
      * connection count.
      *
-     * A channel whose node key exists but holds no members is reported with no
-     * users and no connections, exactly as {@see isOccupied()} treats it: Redis
-     * drops a hash when its last field goes, so an empty one is a momentary
-     * state rather than a lasting one.
+     * With the SCAN fallback on, a channel whose node key was found but came
+     * back empty is reported with no users and no connections. Through the
+     * index such a channel is left out. Redis drops a hash when its last field
+     * goes, so an empty one is a momentary state and the two agree in practice.
      *
      * @return array<string, array{users: list<string>, connections: int}> Keyed by channel name.
      */
     public function snapshot(?string $appId = null): array
     {
-        $keys = $this->snapshotKeys($this->appId($appId));
+        $app = $this->appId($appId);
+
+        $read = $this->scanFallback() ? $this->scannedHashes($app) : $this->indexedHashes($app);
 
         /** @var array<string, int> $connections */
         $connections = [];
@@ -185,42 +235,21 @@ class RoomRoster
         /** @var array<string, array<string, true>> $users */
         $users = [];
 
-        /** @var list<string> $flat */
-        $flat = [];
-
-        /** @var list<string> $owners */
-        $owners = [];
-
-        foreach ($keys as $channel => $nodeKeys) {
+        foreach ($read as $channel => $hashes) {
             $channel = (string) $channel;
 
             $connections[$channel] = 0;
 
-            foreach ($nodeKeys as $key) {
-                $flat[] = $key;
-                $owners[] = $channel;
-            }
-        }
+            foreach ($hashes as $hash) {
+                $connections[$channel] += count($hash);
 
-        if ($flat === []) {
-            return [];
-        }
-
-        foreach ($this->pipelinedHashes($flat) as $index => $hash) {
-            $channel = $owners[$index] ?? null;
-
-            if ($channel === null) {
-                continue;
-            }
-
-            $connections[$channel] += count($hash);
-
-            // The hash is socket id => presence user id. A blank user id is a
-            // non-presence member, which counts as a connection but not as a
-            // distinct user, the same way users() treats it.
-            foreach ($hash as $userId) {
-                if (is_string($userId) && $userId !== '') {
-                    $users[$channel][$userId] = true;
+                // The hash is socket id => presence user id. A blank user id is
+                // a non-presence member, which counts as a connection but not
+                // as a distinct user, the same way users() treats it.
+                foreach ($hash as $userId) {
+                    if (is_string($userId) && $userId !== '') {
+                        $users[$channel][$userId] = true;
+                    }
                 }
             }
         }
@@ -261,6 +290,271 @@ class RoomRoster
         }
 
         return $keys;
+    }
+
+    /**
+     * Every channel of an application found by SCAN, with its node hashes.
+     *
+     * A channel whose key was found keeps its entry even when its hashes come
+     * back empty, which is how {@see snapshot()} read before the index.
+     *
+     * @return array<string, list<array<array-key, mixed>>> Channel name => node hashes.
+     */
+    protected function scannedHashes(string $appId): array
+    {
+        $read = [];
+        $flat = [];
+        $owners = [];
+
+        foreach ($this->snapshotKeys($appId) as $channel => $nodeKeys) {
+            $channel = (string) $channel;
+            $read[$channel] = [];
+
+            foreach ($nodeKeys as $key) {
+                $flat[] = $key;
+                $owners[] = $channel;
+            }
+        }
+
+        foreach ($this->hashes($flat) as $index => $hash) {
+            $channel = $owners[$index] ?? null;
+
+            if ($channel !== null) {
+                $read[$channel][] = $hash;
+            }
+        }
+
+        return $read;
+    }
+
+    /**
+     * Every channel of an application found through the index sets, with its
+     * non-empty node hashes.
+     *
+     * Three round trips at any channel and node count, and no SCAN: SMEMBERS of
+     * the channel index, a pipelined SMEMBERS of every channel's node index,
+     * and a pipelined HGETALL of every indexed hash. A channel is reported only
+     * when at least one of its hashes still exists, so an index entry left by a
+     * node that died without cleaning up is never reported; such entries are
+     * trimmed on the way out.
+     *
+     * @return array<string, list<array<array-key, mixed>>> Channel name => node hashes.
+     */
+    protected function indexedHashes(string $appId): array
+    {
+        $channels = array_map('strval', $this->members($this->keys->channelIndexKey($appId)));
+
+        if ($channels === []) {
+            return [];
+        }
+
+        $nodeSets = $this->pipelinedMembers(array_map(
+            fn (string $channel): string => $this->keys->nodeIndexKey($appId, $channel),
+            $channels,
+        ));
+
+        $flat = [];
+        $owners = [];
+        $emptyChannels = [];
+
+        foreach ($channels as $index => $channel) {
+            $nodes = $nodeSets[$index] ?? [];
+
+            if ($nodes === []) {
+                $emptyChannels[] = $channel;
+
+                continue;
+            }
+
+            foreach ($nodes as $node) {
+                $flat[] = $this->keys->hashKey($appId, $channel, $node);
+                $owners[] = [$channel, $node];
+            }
+        }
+
+        $read = [];
+        $stale = [];
+
+        foreach ($this->hashes($flat) as $index => $hash) {
+            $owner = $owners[$index] ?? null;
+
+            if ($owner === null) {
+                continue;
+            }
+
+            if ($hash === []) {
+                $stale[] = $owner;
+
+                continue;
+            }
+
+            $read[$owner[0]][] = $hash;
+        }
+
+        $this->trim($appId, $stale, $emptyChannels);
+
+        return $read;
+    }
+
+    /**
+     * The non-empty node hashes of one channel of an application.
+     *
+     * With the SCAN fallback on this is the sweep plus one pipelined HGETALL it
+     * always was. With it off it is one SMEMBERS of the channel's node index and
+     * one pipelined HGETALL, with no SCAN; an indexed node whose hash has
+     * expired is skipped and trimmed from the index.
+     *
+     * @return list<array<array-key, mixed>>
+     */
+    protected function channelHashes(string $channel, ?string $appId): array
+    {
+        $appId = $this->appId($appId);
+
+        if ($this->scanFallback()) {
+            return $this->hashes($this->nodeKeys($channel, $appId));
+        }
+
+        $nodes = $this->members($this->keys->nodeIndexKey($appId, $channel));
+
+        $keys = array_map(fn (string $node): string => $this->keys->hashKey($appId, $channel, $node), $nodes);
+
+        $live = [];
+        $stale = [];
+
+        foreach ($this->hashes($keys) as $index => $hash) {
+            if ($hash === []) {
+                $stale[] = [$channel, $nodes[$index] ?? ''];
+
+                continue;
+            }
+
+            $live[] = $hash;
+        }
+
+        $this->trim($appId, $stale, []);
+
+        return $live;
+    }
+
+    /**
+     * Remove index entries a read found pointing at nothing.
+     *
+     * Each removal is a script that re-checks the state inside Redis before it
+     * deletes anything: a node is dropped from a node index only while its hash
+     * is still missing, and a channel from the channel index only while its
+     * node index is empty. A node that writes its hash between this read and
+     * the trim therefore keeps its entry, and a node that loses one by a race
+     * re-adds it on its next write or heartbeat.
+     *
+     * Trimming is best effort and never disturbs the read connection. Each
+     * script is its own command, outside any pipeline: predis drops the
+     * connection when a pipelined reply is an error, but a plain command's
+     * error reply leaves it open. The first refusal of any kind (a read-only
+     * replica, an ACL user without EVAL, scripting disabled) stops trimming
+     * for the rest of this instance's life, so a reader that may not write
+     * pays for it once rather than on every read. The results stay correct
+     * either way: the read already left every entry without a live hash out.
+     *
+     * @param  list<array{0: string, 1: string}>  $staleNodes  Channel and node pairs whose hash is gone.
+     * @param  list<string>  $emptyChannels  Channels whose node index is empty.
+     */
+    protected function trim(string $appId, array $staleNodes, array $emptyChannels): void
+    {
+        if ($this->trimRefused || ($staleNodes === [] && $emptyChannels === [])) {
+            return;
+        }
+
+        $channelIndex = $this->keys->channelIndexKey($appId);
+
+        // EVAL takes every key through KEYS; predis' eval() signature only
+        // declares two of the variadic arguments, so the command is built raw.
+        $commands = [];
+
+        foreach ($staleNodes as [$channel, $node]) {
+            $commands[] = new RawCommand('EVAL', [
+                self::TRIM_NODE_SCRIPT,
+                3,
+                $this->keys->hashKey($appId, $channel, $node),
+                $this->keys->nodeIndexKey($appId, $channel),
+                $channelIndex,
+                $node,
+                $channel,
+            ]);
+        }
+
+        foreach ($emptyChannels as $channel) {
+            $commands[] = new RawCommand('EVAL', [
+                self::TRIM_CHANNEL_SCRIPT,
+                2,
+                $this->keys->nodeIndexKey($appId, $channel),
+                $channelIndex,
+                $channel,
+            ]);
+        }
+
+        foreach ($commands as $command) {
+            try {
+                // A client built with exceptions off returns the error instead.
+                $refused = $this->client()->executeCommand($command) instanceof ErrorInterface;
+            } catch (ServerException) {
+                $refused = true;
+            }
+
+            if ($refused) {
+                $this->trimRefused = true;
+
+                return;
+            }
+        }
+    }
+
+    /**
+     * Determine whether reads still sweep the keyspace with SCAN.
+     *
+     * On by default, and when the key is missing from an older published
+     * config, so an upgrade never loses data written by a node on the
+     * previous release, which writes no index.
+     */
+    protected function scanFallback(): bool
+    {
+        return (bool) ($this->config['scan_fallback'] ?? true);
+    }
+
+    /**
+     * The members of one set, as strings.
+     *
+     * @return list<string>
+     */
+    protected function members(string $key): array
+    {
+        return array_values(array_map('strval', $this->client()->smembers($key)));
+    }
+
+    /**
+     * The members of every given set in a single pipelined round trip.
+     *
+     * @param  list<string>  $keys
+     * @return list<list<string>>
+     */
+    protected function pipelinedMembers(array $keys): array
+    {
+        $results = $this->client()->pipeline(function (ClientContextInterface $pipe) use ($keys): void {
+            foreach ($keys as $key) {
+                $pipe->smembers($key);
+            }
+        });
+
+        if (! is_array($results)) {
+            return [];
+        }
+
+        $sets = [];
+
+        foreach (array_values($results) as $result) {
+            $sets[] = is_array($result) ? array_values(array_map('strval', $result)) : [];
+        }
+
+        return $sets;
     }
 
     /**

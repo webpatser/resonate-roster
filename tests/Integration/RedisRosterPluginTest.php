@@ -9,21 +9,24 @@ use Webpatser\ResonateRoster\RoomRoster;
 use Webpatser\ResonateRoster\RosterKeys;
 use Webpatser\ResonateRoster\Tests\Support\FakeConnection;
 
+use function Fledge\Async\async;
+use function Fledge\Async\Future\await;
+
 beforeEach(function () {
     if (! redisReachable()) {
         $this->markTestSkipped('Redis not reachable');
     }
 
-    $this->redis = new Client(['host' => '127.0.0.1', 'port' => 6379, 'database' => 15]);
+    $this->redis = new Client(['host' => '127.0.0.1', 'port' => testRedisPort(), 'database' => 15]);
 
-    foreach ([...$this->redis->keys('roster-test:*'), ...$this->redis->keys('roster-test-nodes:*')] as $key) {
+    foreach ($this->redis->keys('roster-test*') as $key) {
         $this->redis->del($key);
     }
 });
 
 afterEach(function () {
     if (isset($this->redis)) {
-        foreach ([...$this->redis->keys('roster-test:*'), ...$this->redis->keys('roster-test-nodes:*')] as $key) {
+        foreach ($this->redis->keys('roster-test*') as $key) {
             $this->redis->del($key);
         }
     }
@@ -342,6 +345,207 @@ it('restores and drops the node index on the heartbeat', function () {
     expect($seen['restored'])->toBe([$node])
         ->and($seen['ttl'])->toBeGreaterThan(0)
         ->and($seen['dropped'])->toBe([]);
+});
+
+it('keeps the application channel index in step with join, leave and the heartbeat', function () {
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'presence-room-'.uniqid();
+    $otherName = 'presence-other-'.uniqid();
+    $index = (new RosterKeys('roster-test'))->channelIndexKey('app-id');
+
+    $alice = new FakeConnection('sock-alice', $app);
+    $bob = new FakeConnection('sock-bob', $app);
+
+    $channel = subscribePresence($channelName, $alice, 'u-alice');
+    $other = subscribePresence($otherName, $bob, 'u-bob');
+
+    $plugin = new RedisRosterPlugin;
+    $redis = $this->redis;
+    $seen = [];
+
+    runLoop(function () use ($plugin, $context, $channel, $other, $alice, $bob, $redis, $index, &$seen) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($alice, $channel);
+        $plugin->onSubscribe($bob, $other);
+        $seen['joined'] = $redis->smembers($index);
+        $seen['ttl'] = $redis->ttl($index);
+
+        // The last member of one channel leaves: that channel leaves the index.
+        // The server strips the connection from its channels before onClose.
+        $channel->unsubscribe($alice);
+        $plugin->onClose($alice);
+        $seen['left'] = $redis->smembers($index);
+
+        // A lost index is rebuilt by the heartbeat; an emptied channel is dropped.
+        $redis->del($index);
+        ($plugin->ticks()[0]['callback'])();
+        $seen['restored'] = $redis->smembers($index);
+
+        $other->unsubscribe($bob);
+        ($plugin->ticks()[0]['callback'])();
+        $seen['dropped'] = $redis->exists($index);
+    });
+
+    expect($seen['joined'])->toEqualCanonicalizing([$channelName, $otherName])
+        ->and($seen['ttl'])->toBeGreaterThan(0)
+        ->and($seen['left'])->toBe([$otherName])
+        ->and($seen['restored'])->toBe([$otherName])
+        ->and($seen['dropped'])->toBe(0);
+});
+
+it('serves the plugin writes from the index with the scan fallback off', function () {
+    config()->set('resonate-roster.scan_fallback', false);
+
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'presence-room-'.uniqid();
+
+    $alice = new FakeConnection('sock-alice', $app);
+    $bob = new FakeConnection('sock-bob', $app);
+
+    $channel = subscribePresence($channelName, $alice, 'u-alice');
+    subscribePresence($channelName, $bob, 'u-bob');
+
+    $plugin = new RedisRosterPlugin;
+
+    runLoop(function () use ($plugin, $context, $channel, $alice, $bob) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($alice, $channel);
+        $plugin->onSubscribe($bob, $channel);
+        $plugin->onClose($alice);
+    });
+
+    [$roster, $connection] = countingRoster(scanFallback: false);
+
+    expect($roster->users($channelName, 'app-id'))->toBe(['u-bob'])
+        ->and($roster->occupiedChannels('app-id'))->toBe([$channelName])
+        ->and($roster->snapshot('app-id')[$channelName]['connections'])->toBe(1)
+        ->and($connection->count('SCAN'))->toBe(0)
+        ->and($connection->count('SMEMBERS'))->toBeGreaterThan(0);
+});
+
+it('keeps tracking a channel that gains a member while the heartbeat drops it', function () {
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'presence-room-'.uniqid();
+    $hash = (new RosterKeys('roster-test'))->hashKey('app-id', $channelName, RosterKeys::nodeId());
+
+    $alice = new FakeConnection('sock-alice', $app);
+    $bob = new FakeConnection('sock-bob', $app);
+
+    $channel = subscribePresence($channelName, $alice, 'u-alice');
+
+    $plugin = new RedisRosterPlugin;
+    $redis = $this->redis;
+    $seen = [];
+
+    runLoop(function () use ($plugin, $context, $channel, $channelName, $alice, $bob, $redis, $hash, &$seen) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($alice, $channel);
+
+        // A missed onClose: the channel is empty, so the heartbeat drops it.
+        $channel->unsubscribe($alice);
+
+        // Bob subscribes while that heartbeat is suspended on its Redis call.
+        await([
+            async(fn () => ($plugin->ticks()[0]['callback'])()),
+            async(function () use ($plugin, $channelName, $bob) {
+                $plugin->onSubscribe($bob, subscribePresence($channelName, $bob, 'u-bob'));
+            }),
+        ]);
+
+        // The next heartbeat must still own the channel: it restores a lost hash.
+        $redis->del($hash);
+        ($plugin->ticks()[0]['callback'])();
+        $seen['after'] = $redis->hgetall($hash);
+    });
+
+    expect($seen['after'])->toBe(['sock-bob' => 'u-bob']);
+});
+
+it('keeps a socket that subscribes while the heartbeat reads the hash', function () {
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'presence-room-'.uniqid();
+    $hash = (new RosterKeys('roster-test'))->hashKey('app-id', $channelName, RosterKeys::nodeId());
+
+    $alice = new FakeConnection('sock-alice', $app);
+    $bob = new FakeConnection('sock-bob', $app);
+
+    $channel = subscribePresence($channelName, $alice, 'u-alice');
+
+    $plugin = new RedisRosterPlugin;
+    $redis = $this->redis;
+    $seen = [];
+
+    runLoop(function () use ($plugin, $context, $channel, $channelName, $alice, $bob, $redis, $hash, &$seen) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($alice, $channel);
+
+        // A missed onClose left a socket behind that the heartbeat must remove.
+        $redis->hset($hash, 'sock-ghost', 'u-ghost');
+
+        // Bob subscribes while that heartbeat is suspended on its Redis calls.
+        await([
+            async(fn () => ($plugin->ticks()[0]['callback'])()),
+            async(function () use ($plugin, $channelName, $bob) {
+                $plugin->onSubscribe($bob, subscribePresence($channelName, $bob, 'u-bob'));
+            }),
+        ]);
+
+        $seen['after'] = $redis->hgetall($hash);
+    });
+
+    expect($seen['after'])->toEqualCanonicalizing(['sock-alice' => 'u-alice', 'sock-bob' => 'u-bob'])
+        ->and($seen['after'])->not->toHaveKey('sock-ghost');
+});
+
+it('never shortens the TTL of a shared index set', function () {
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'presence-room-'.uniqid();
+    $keys = new RosterKeys('roster-test');
+
+    // Another node with a longer ttl already refreshed both sets.
+    $this->redis->sadd($keys->nodeIndexKey('app-id', $channelName), ['node-long']);
+    $this->redis->expire($keys->nodeIndexKey('app-id', $channelName), 1000);
+    $this->redis->sadd($keys->channelIndexKey('app-id'), [$channelName]);
+    $this->redis->expire($keys->channelIndexKey('app-id'), 1000);
+
+    $alice = new FakeConnection('sock-alice', $app);
+    $channel = subscribePresence($channelName, $alice, 'u-alice');
+
+    $plugin = new RedisRosterPlugin;
+
+    runLoop(function () use ($plugin, $context, $channel, $alice) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($alice, $channel);
+    });
+
+    expect($this->redis->ttl($keys->nodeIndexKey('app-id', $channelName)))->toBeGreaterThan(900)
+        ->and($this->redis->ttl($keys->channelIndexKey('app-id')))->toBeGreaterThan(900)
+        ->and($this->redis->ttl($keys->hashKey('app-id', $channelName, RosterKeys::nodeId())))->toBeLessThanOrEqual(90);
+});
+
+it('gives a new index set the configured TTL', function () {
+    $app = app(ApplicationProvider::class)->findById('app-id');
+    $context = new PluginContext(app(ChannelManager::class));
+    $channelName = 'presence-room-'.uniqid();
+    $keys = new RosterKeys('roster-test');
+
+    $alice = new FakeConnection('sock-alice', $app);
+    $channel = subscribePresence($channelName, $alice, 'u-alice');
+
+    $plugin = new RedisRosterPlugin;
+
+    runLoop(function () use ($plugin, $context, $channel, $alice) {
+        $plugin->boot($context);
+        $plugin->onSubscribe($alice, $channel);
+    });
+
+    expect($this->redis->ttl($keys->nodeIndexKey('app-id', $channelName)))->toBeGreaterThan(0)->toBeLessThanOrEqual(90)
+        ->and($this->redis->ttl($keys->channelIndexKey('app-id')))->toBeGreaterThan(0)->toBeLessThanOrEqual(90);
 });
 
 it('keeps the node index outside the roster scan patterns', function () {

@@ -93,6 +93,23 @@ class RosterKeys
     }
 
     /**
+     * The set key indexing which channels of one app hold at least one hash.
+     *
+     * The set is "{prefix}-channels:{appId}" and its members are channel
+     * names, so a reader lists an application's channels with SMEMBERS and
+     * then follows each one's {@see nodeIndexKey()} instead of a SCAN.
+     *
+     * Like the node index it sits outside the "{prefix}:" namespace, so no
+     * SCAN pattern of this schema matches it. A member may outlive every hash
+     * of its channel when nodes die without cleaning up, so a reader must
+     * treat a channel without a live hash as unoccupied.
+     */
+    public function channelIndexKey(string $appId): string
+    {
+        return $this->prefix.'-channels:'.$appId;
+    }
+
+    /**
      * The SCAN pattern matching every node's key for one channel of one app.
      *
      * The trailing ":*" keeps "presence-foo" from matching "presence-foobar":

@@ -1,10 +1,15 @@
 <?php
 
+use Predis\Client;
+use Predis\Connection\Parameters;
 use Revolt\EventLoop;
+use Webpatser\Resonate\Contracts\ApplicationProvider;
 use Webpatser\Resonate\Protocols\Pusher\Contracts\ChannelConnectionManager;
 use Webpatser\Resonate\Protocols\Pusher\Contracts\ChannelManager;
 use Webpatser\Resonate\Protocols\Pusher\Managers\ArrayChannelConnectionManager;
 use Webpatser\Resonate\Protocols\Pusher\Managers\ArrayChannelManager;
+use Webpatser\ResonateRoster\RoomRoster;
+use Webpatser\ResonateRoster\Tests\Support\CountingConnection;
 use Webpatser\ResonateRoster\Tests\TestCase;
 
 uses(TestCase::class)->in(__DIR__.'/Feature', __DIR__.'/Integration');
@@ -19,11 +24,45 @@ uses()->beforeEach(function () {
 })->in(__DIR__.'/Integration');
 
 /**
+ * The port of the test Redis, read from ROSTER_TEST_REDIS_PORT (6379 when unset).
+ */
+function testRedisPort(): int
+{
+    $port = getenv('ROSTER_TEST_REDIS_PORT');
+
+    return is_string($port) && $port !== '' ? (int) $port : 6379;
+}
+
+/**
+ * A reader over a counting predis connection, with the SCAN fallback on or off.
+ *
+ * @return array{0: RoomRoster, 1: CountingConnection}
+ */
+function countingRoster(bool $scanFallback): array
+{
+    $connection = new CountingConnection(Parameters::create([
+        'host' => '127.0.0.1',
+        'port' => testRedisPort(),
+        'database' => 15,
+    ]));
+
+    $config = [...config('resonate-roster'), 'scan_fallback' => $scanFallback];
+
+    // A hand-built connection skips predis' connection factory, which is what
+    // normally selects the database, so select it here and start counting after.
+    $client = new Client($connection);
+    $client->select(15);
+    $connection->reset();
+
+    return [new RoomRoster($config, app(ApplicationProvider::class), $client), $connection];
+}
+
+/**
  * Determine whether a Redis server is reachable for the integration tests.
  */
 function redisReachable(): bool
 {
-    $connection = @fsockopen('127.0.0.1', 6379, $errno, $errstr, 0.5);
+    $connection = @fsockopen('127.0.0.1', testRedisPort(), $errno, $errstr, 0.5);
 
     if ($connection === false) {
         return false;

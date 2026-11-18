@@ -81,4 +81,22 @@ return [
 
     'track' => env('RESONATE_ROSTER_TRACK', 'presence'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | SCAN fallback for rolling deploys
+    |--------------------------------------------------------------------------
+    |
+    | The plugin keeps two index sets next to the hashes: per application the
+    | channels that hold a roster hash ("{prefix}-channels:{A}") and per
+    | channel the nodes that hold one ("{prefix}-nodes:{A}:{C}"). With this
+    | flag off the RoomRoster reads only through those sets: no SCAN, a fixed
+    | number of round trips per read. With it on, the RoomRoster finds the
+    | hashes with a keyspace SCAN as before, which also sees hashes written by
+    | nodes on a release that keeps no index. Leave it on until every
+    | Resonate node runs this release, then turn it off. See UPGRADE.md.
+    |
+    */
+
+    'scan_fallback' => (bool) env('RESONATE_ROSTER_SCAN_FALLBACK', true),
+
 ];

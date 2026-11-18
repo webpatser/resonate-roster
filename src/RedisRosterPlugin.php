@@ -28,24 +28,57 @@ use function Fledge\Async\Redis\createRedisClient;
 class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickScheduler
 {
     /**
-     * Drop one socket from a node's hash, and the node from the channel index
-     * once that hash is empty. KEYS: hash, index. ARGV: socket id, node id.
+     * Drop one socket from a node's hash, the node from the channel's node
+     * index once that hash is empty, and the channel from the application's
+     * channel index once no node is left.
+     * KEYS: hash, node index, channel index. ARGV: socket id, node id, channel.
      */
     protected const REMOVE_MEMBER_SCRIPT = <<<'LUA'
         redis.call('HDEL', KEYS[1], ARGV[1])
         if redis.call('HLEN', KEYS[1]) == 0 then
             redis.call('SREM', KEYS[2], ARGV[2])
+            if redis.call('SCARD', KEYS[2]) == 0 then
+                redis.call('SREM', KEYS[3], ARGV[3])
+            end
         end
         return 1
         LUA;
 
     /**
-     * Delete a node's hash and drop the node from the channel index.
-     * KEYS: hash, index. ARGV: node id.
+     * Delete a node's hash, drop the node from the channel's node index, and
+     * the channel from the application's channel index once no node is left.
+     * KEYS: hash, node index, channel index. ARGV: node id, channel.
      */
     protected const DROP_HASH_SCRIPT = <<<'LUA'
         redis.call('DEL', KEYS[1])
         redis.call('SREM', KEYS[2], ARGV[1])
+        if redis.call('SCARD', KEYS[2]) == 0 then
+            redis.call('SREM', KEYS[3], ARGV[2])
+        end
+        return 1
+        LUA;
+
+    /**
+     * Add the node to the channel's node index and the channel to the
+     * application's channel index, and extend both TTLs, as one unit.
+     * KEYS: node index, channel index. ARGV: node id, channel, ttl.
+     *
+     * The sets are shared by every node, so a TTL is only ever lengthened: a
+     * node with a smaller ttl must not cut a set short of another node's hash.
+     * The script compares against TTL itself rather than using EXPIRE GT,
+     * because GT treats a key without a TTL as infinite and so would never
+     * give a freshly created set one; this also works before Redis 7.
+     */
+    protected const INDEX_SCRIPT = <<<'LUA'
+        local ttl = tonumber(ARGV[3])
+        redis.call('SADD', KEYS[1], ARGV[1])
+        if redis.call('TTL', KEYS[1]) < ttl then
+            redis.call('EXPIRE', KEYS[1], ttl)
+        end
+        redis.call('SADD', KEYS[2], ARGV[2])
+        if redis.call('TTL', KEYS[2]) < ttl then
+            redis.call('EXPIRE', KEYS[2], ttl)
+        end
         return 1
         LUA;
 
@@ -253,12 +286,18 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
         }
 
         if ($members === []) {
-            $this->redis->eval(
-                self::DROP_HASH_SCRIPT,
-                [$key, $this->keys->nodeIndexKey($appId, $name)],
-                [$this->node],
-            );
+            // Forget before the drop, not after: the eval suspends this fiber,
+            // and a subscribe on this node during that wait re-tracks the
+            // channel and writes its hash after the DEL. Forgetting afterwards
+            // would undo that re-track, and this node would never heartbeat
+            // the channel again while the member is still connected.
             $this->forget($appId, $name);
+
+            $this->redis?->eval(
+                self::DROP_HASH_SCRIPT,
+                [$key, $this->keys->nodeIndexKey($appId, $name), $this->keys->channelIndexKey($appId)],
+                [$this->node, $name],
+            );
 
             return;
         }
@@ -278,34 +317,42 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     }
 
     /**
-     * Add this node to the channel's node index and refresh the index TTL.
+     * Add this node to the channel's node index and the channel to the
+     * application's channel index, and extend both TTLs.
      *
-     * The index carries the same TTL as the hashes and is refreshed on every
-     * write and every heartbeat, so it lives exactly as long as some node
-     * still holds a hash for the channel.
+     * Both sets get at least this node's TTL on every write and every
+     * heartbeat (never less than they already have), so each lives as long as
+     * some live node still holds a hash it indexes. This always runs after the hash write, so an
+     * index entry never names a hash that has not been written yet.
      */
     protected function indexNode(string $appId, string $name): void
     {
-        $index = $this->keys->nodeIndexKey($appId, $name);
-
-        $this->redis?->getSet($index)->add($this->node);
-        $this->redis?->expireIn($index, $this->ttl);
+        $this->redis?->eval(
+            self::INDEX_SCRIPT,
+            [$this->keys->nodeIndexKey($appId, $name), $this->keys->channelIndexKey($appId)],
+            [$this->node, $name, (string) $this->ttl],
+        );
     }
 
     /**
-     * Remove one socket from this node's hash, and this node from the index
-     * once the hash is empty.
+     * Remove one socket from this node's hash, this node from the node index
+     * once the hash is empty, and the channel from the channel index once no
+     * node is left.
      *
-     * The HDEL, the emptiness check and the SREM run as one script, so a
-     * concurrent subscribe on this node can never land between them and be
-     * left out of the index.
+     * The HDEL, the emptiness checks and the SREMs run as one script, so a
+     * concurrent subscribe can never land between them and be left out of
+     * either index.
      */
     protected function removeMember(string $appId, string $name, string $socketId): void
     {
         $this->redis?->eval(
             self::REMOVE_MEMBER_SCRIPT,
-            [$this->keys->hashKey($appId, $name, $this->node), $this->keys->nodeIndexKey($appId, $name)],
-            [$socketId, $this->node],
+            [
+                $this->keys->hashKey($appId, $name, $this->node),
+                $this->keys->nodeIndexKey($appId, $name),
+                $this->keys->channelIndexKey($appId),
+            ],
+            [$socketId, $this->node, $name],
         );
     }
 

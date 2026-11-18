@@ -89,7 +89,7 @@ class TestCase extends Testbench
             'connection' => [
                 'url' => null,
                 'host' => '127.0.0.1',
-                'port' => '6379',
+                'port' => (string) (getenv('ROSTER_TEST_REDIS_PORT') ?: '6379'),
                 'username' => null,
                 'password' => null,
                 'database' => '15',

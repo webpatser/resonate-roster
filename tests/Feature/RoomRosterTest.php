@@ -3,13 +3,14 @@
 use Predis\Client;
 use Webpatser\Resonate\Contracts\ApplicationProvider;
 use Webpatser\ResonateRoster\RoomRoster;
+use Webpatser\ResonateRoster\RosterKeys;
 
 beforeEach(function () {
     if (! redisReachable()) {
         $this->markTestSkipped('Redis not reachable');
     }
 
-    $this->redis = new Client(['host' => '127.0.0.1', 'port' => 6379, 'database' => 15]);
+    $this->redis = new Client(['host' => '127.0.0.1', 'port' => testRedisPort(), 'database' => 15]);
 
     flushRosterKeys($this->redis);
 });
@@ -22,7 +23,8 @@ afterEach(function () {
 
 function flushRosterKeys(Client $redis): void
 {
-    foreach ($redis->keys('roster-test:*') as $key) {
+    // "roster-test*" also covers the "-nodes:" and "-channels:" index sets.
+    foreach ($redis->keys('roster-test*') as $key) {
         $redis->del($key);
     }
 }
@@ -34,6 +36,183 @@ function roster(): RoomRoster
 {
     return new RoomRoster(config('resonate-roster'), app(ApplicationProvider::class));
 }
+
+/**
+ * Write one node's hash for a channel together with both index sets, the way
+ * an upgraded plugin does.
+ *
+ * @param  array<string, string>  $members  Socket id => presence user id.
+ */
+function seedIndexed(Client $redis, string $appId, string $channel, string $node, array $members): void
+{
+    $keys = new RosterKeys('roster-test');
+
+    $redis->hmset($keys->hashKey($appId, $channel, $node), $members);
+    $redis->sadd($keys->nodeIndexKey($appId, $channel), [$node]);
+    $redis->sadd($keys->channelIndexKey($appId), [$channel]);
+}
+
+/**
+ * Every public read of one application, for comparing two readers.
+ *
+ * @param  list<string>  $channels
+ * @return array<string, mixed>
+ */
+function readEverything(RoomRoster $roster, string $appId, array $channels): array
+{
+    $result = [
+        'occupied' => $roster->occupiedChannels($appId),
+        'snapshot' => $roster->snapshot($appId),
+    ];
+
+    sort($result['occupied']);
+    ksort($result['snapshot']);
+
+    foreach ($result['snapshot'] as &$entry) {
+        sort($entry['users']);
+    }
+
+    unset($entry);
+
+    foreach ($channels as $channel) {
+        $users = $roster->users($channel, $appId);
+        $sockets = $roster->sockets($channel, $appId);
+        sort($users);
+        sort($sockets);
+
+        $result[$channel] = [
+            'users' => $users,
+            'sockets' => $sockets,
+            'userCount' => $roster->userCount($channel, $appId),
+            'socketCount' => $roster->socketCount($channel, $appId),
+            'connectionCount' => $roster->connectionCount($channel, $appId),
+            'occupied' => $roster->isOccupied($channel, $appId),
+            'aliceOnline' => $roster->isOnline($channel, 'u-alice', $appId),
+        ];
+    }
+
+    return $result;
+}
+
+it('reads indexed data without a single SCAN', function () {
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-a', ['sock-1' => 'u-alice', 'sock-2' => 'u-bob']);
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-b', ['sock-3' => 'u-alice']);
+    seedIndexed($this->redis, 'app-id', 'updates', 'node-a', ['sock-4' => '']);
+
+    [$roster, $connection] = countingRoster(scanFallback: false);
+
+    $count = $roster->userCount('presence-room', 'app-id');
+    $perChannel = $connection->commands;
+
+    $connection->reset();
+    $snapshot = $roster->snapshot('app-id');
+    $bulk = $connection->commands;
+
+    $connection->reset();
+    $occupied = $roster->occupiedChannels('app-id');
+
+    expect($count)->toBe(2)
+        ->and($perChannel)->toBe(['SMEMBERS', 'HGETALL', 'HGETALL'])
+        ->and($snapshot['presence-room']['connections'])->toBe(3)
+        ->and($snapshot['updates']['connections'])->toBe(1)
+        ->and($bulk)->toBe(['SMEMBERS', 'SMEMBERS', 'SMEMBERS', 'HGETALL', 'HGETALL', 'HGETALL'])
+        ->and($occupied)->toEqualCanonicalizing(['presence-room', 'updates'])
+        ->and($connection->count('SCAN'))->toBe(0);
+});
+
+it('finds data written without the index only while the scan fallback is on', function () {
+    // A node on the previous release writes the hash and no index at all.
+    $this->redis->hset('roster-test:app-id:presence-room:node-old', 'sock-1', 'u-alice');
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-new', ['sock-2' => 'u-bob']);
+
+    [$fallback, $scanning] = countingRoster(scanFallback: true);
+    [$indexed] = countingRoster(scanFallback: false);
+
+    expect($fallback->users('presence-room', 'app-id'))->toEqualCanonicalizing(['u-alice', 'u-bob'])
+        ->and($scanning->count('SCAN'))->toBeGreaterThan(0)
+        ->and($fallback->snapshot('app-id')['presence-room']['connections'])->toBe(2)
+        ->and($indexed->users('presence-room', 'app-id'))->toBe(['u-bob'])
+        ->and($indexed->snapshot('app-id')['presence-room']['connections'])->toBe(1);
+});
+
+it('scans by default so an upgrade loses nothing', function () {
+    $this->redis->hset('roster-test:app-id:presence-room:node-old', 'sock-1', 'u-alice');
+
+    expect(roster()->users('presence-room', 'app-id'))->toBe(['u-alice']);
+});
+
+it('drops a dead node from the index once its hash expires', function () {
+    $keys = new RosterKeys('roster-test');
+
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-live', ['sock-1' => 'u-alice']);
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-dead', ['sock-2' => 'u-bob']);
+    seedIndexed($this->redis, 'app-id', 'presence-gone', 'node-dead', ['sock-3' => 'u-carol']);
+
+    // The dead node stops refreshing: its hashes expire, its index entries
+    // stay. Deleting the hashes is what their expiry does, without the wait.
+    $this->redis->del($keys->hashKey('app-id', 'presence-room', 'node-dead'));
+    $this->redis->del($keys->hashKey('app-id', 'presence-gone', 'node-dead'));
+
+    [$roster] = countingRoster(scanFallback: false);
+
+    expect($roster->users('presence-room', 'app-id'))->toBe(['u-alice'])
+        ->and($roster->isOnline('presence-room', 'u-bob', 'app-id'))->toBeFalse()
+        ->and($roster->isOccupied('presence-gone', 'app-id'))->toBeFalse()
+        ->and($roster->occupiedChannels('app-id'))->toBe(['presence-room'])
+        ->and(array_keys($roster->snapshot('app-id')))->toBe(['presence-room'])
+        ->and($this->redis->smembers($keys->nodeIndexKey('app-id', 'presence-room')))->toBe(['node-live'])
+        ->and($this->redis->exists($keys->nodeIndexKey('app-id', 'presence-gone')))->toBe(0)
+        ->and($this->redis->smembers($keys->channelIndexKey('app-id')))->toBe(['presence-room']);
+});
+
+it('keeps the read connection and stops trimming when the server refuses scripts', function () {
+    $keys = new RosterKeys('roster-test');
+
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-live', ['sock-1' => 'u-alice']);
+    $this->redis->sadd($keys->nodeIndexKey('app-id', 'presence-room'), ['node-dead']);
+
+    [$roster, $connection] = countingRoster(scanFallback: false);
+    $connection->rejectScripts = true;
+
+    $first = $roster->users('presence-room', 'app-id');
+    $firstScripts = $connection->count('EVAL');
+
+    $second = $roster->users('presence-room', 'app-id');
+    $secondScripts = $connection->count('EVAL') - $firstScripts;
+
+    expect($first)->toBe(['u-alice'])
+        ->and($second)->toBe(['u-alice'])
+        ->and($firstScripts)->toBe(1)
+        ->and($secondScripts)->toBe(0)
+        ->and($connection->disconnects)->toBe(0)
+        ->and($connection->connects)->toBe(1);
+});
+
+it('returns the same results from the index as from a scan for a mixed fixture', function () {
+    withSecondApplication();
+
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-a', ['sock-1' => 'u-alice', 'sock-2' => 'u-bob']);
+    seedIndexed($this->redis, 'app-id', 'presence-room', 'node-b', ['sock-3' => 'u-alice']);
+    seedIndexed($this->redis, 'app-id', 'presence-room.7', 'node-a', ['sock-4' => 'u-carol']);
+    seedIndexed($this->redis, 'app-id', 'presence-room.7:x', 'node-b', ['sock-5' => 'u-mallory']);
+    seedIndexed($this->redis, 'app-id', 'updates', 'node-a', ['sock-6' => '', 'sock-7' => '']);
+    seedIndexed($this->redis, 'app-id', '42', 'node-a', ['sock-8' => '7']);
+    seedIndexed($this->redis, 'app-two', 'presence-room', 'node-a', ['sock-9' => 'u-dave']);
+
+    // A dead node: still in the indexes, its hashes long expired.
+    $keys = new RosterKeys('roster-test');
+    $this->redis->sadd($keys->nodeIndexKey('app-id', 'presence-room'), ['node-ghost']);
+    $this->redis->sadd($keys->nodeIndexKey('app-id', 'presence-ghost'), ['node-ghost']);
+    $this->redis->sadd($keys->channelIndexKey('app-id'), ['presence-ghost']);
+
+    $channels = ['presence-room', 'presence-room.7', 'presence-room.7:x', 'updates', '42', 'presence-empty', 'presence-ghost'];
+
+    [$scan] = countingRoster(scanFallback: true);
+    [$index] = countingRoster(scanFallback: false);
+
+    expect(readEverything($index, 'app-id', $channels))->toBe(readEverything($scan, 'app-id', $channels))
+        ->and(readEverything($index, 'app-two', $channels))->toBe(readEverything($scan, 'app-two', $channels));
+});
 
 it('reports distinct users merged across nodes', function () {
     $this->redis->hset('roster-test:app-id:presence-room:node-a', 'sock-1', 'u-alice');
