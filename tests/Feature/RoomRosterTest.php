@@ -23,8 +23,8 @@ afterEach(function () {
 
 function flushRosterKeys(Client $redis): void
 {
-    // "roster-test*" also covers the "-nodes:" and "-channels:" index sets.
-    foreach ($redis->keys('roster-test*') as $key) {
+    // Only keys under the exact prefix plus separator and its index sets, never a sibling "roster-test-..." prefix.
+    foreach (array_merge($redis->keys('roster-test:*'), $redis->keys('roster-test-nodes:*'), $redis->keys('roster-test-channels:*')) as $key) {
         $redis->del($key);
     }
 }

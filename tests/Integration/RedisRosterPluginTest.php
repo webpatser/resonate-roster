@@ -19,14 +19,14 @@ beforeEach(function () {
 
     $this->redis = new Client(['host' => '127.0.0.1', 'port' => testRedisPort(), 'database' => 15]);
 
-    foreach ($this->redis->keys('roster-test*') as $key) {
+    foreach (array_merge($this->redis->keys('roster-test:*'), $this->redis->keys('roster-test-nodes:*'), $this->redis->keys('roster-test-channels:*')) as $key) {
         $this->redis->del($key);
     }
 });
 
 afterEach(function () {
     if (isset($this->redis)) {
-        foreach ($this->redis->keys('roster-test*') as $key) {
+        foreach (array_merge($this->redis->keys('roster-test:*'), $this->redis->keys('roster-test-nodes:*'), $this->redis->keys('roster-test-channels:*')) as $key) {
             $this->redis->del($key);
         }
     }
