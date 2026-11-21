@@ -1,8 +1,8 @@
 <?php
 
+use Fledge\Loop;
 use Predis\Client;
 use Predis\Connection\Parameters;
-use Revolt\EventLoop;
 use Webpatser\Resonate\Contracts\ApplicationProvider;
 use Webpatser\Resonate\Protocols\Pusher\Contracts\ChannelConnectionManager;
 use Webpatser\Resonate\Protocols\Pusher\Contracts\ChannelManager;
@@ -100,7 +100,7 @@ function presenceAuth(string $socketId, string $channel, string $data, string $s
 }
 
 /**
- * Run a closure inside the Revolt event loop, surfacing any failure.
+ * Run a closure inside the Fledge event loop, surfacing any failure.
  *
  * The body runs in a loop callback fiber, so the fledge-fiber Redis client's
  * suspending calls work exactly as they do inside the running server.
@@ -109,23 +109,23 @@ function runLoop(Closure $body): void
 {
     $error = null;
 
-    $watchdog = EventLoop::delay(5.0, function () use (&$error) {
+    $watchdog = Loop::delay(5.0, function () use (&$error) {
         $error = 'event loop timed out';
-        EventLoop::getDriver()->stop();
+        Loop::getDriver()->stop();
     });
 
-    EventLoop::queue(function () use ($body, &$error, $watchdog) {
+    Loop::queue(function () use ($body, &$error, $watchdog) {
         try {
             $body();
         } catch (Throwable $e) {
             $error = $e->getMessage()."\n".$e->getTraceAsString();
         } finally {
-            EventLoop::cancel($watchdog);
-            EventLoop::getDriver()->stop();
+            Loop::cancel($watchdog);
+            Loop::getDriver()->stop();
         }
     });
 
-    EventLoop::run();
+    Loop::run();
 
     if ($error !== null) {
         throw new RuntimeException($error);
