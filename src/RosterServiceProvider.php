@@ -18,6 +18,7 @@ class RosterServiceProvider extends ServiceProvider
     /**
      * Register the package services.
      */
+    #[\Override]
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/../config/resonate-roster.php', 'resonate-roster');

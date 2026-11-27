@@ -108,7 +108,7 @@ class RoomRoster
 
         // PHP coerces numeric-string array keys ("42") to ints, so the ids are
         // cast back to make this the list<string> the signature promises.
-        return array_map('strval', array_keys($users));
+        return array_map(strval(...), array_keys($users));
     }
 
     /**
@@ -126,7 +126,7 @@ class RoomRoster
             }
         }
 
-        return array_map('strval', array_keys($sockets));
+        return array_map(strval(...), array_keys($sockets));
     }
 
     /**
@@ -187,7 +187,7 @@ class RoomRoster
         $app = $this->appId($appId);
 
         if (! $this->scanFallback()) {
-            return array_map('strval', array_keys($this->indexedHashes($app)));
+            return array_map(strval(...), array_keys($this->indexedHashes($app)));
         }
 
         $channels = [];
@@ -200,7 +200,7 @@ class RoomRoster
             }
         }
 
-        return array_map('strval', array_keys($channels));
+        return array_map(strval(...), array_keys($channels));
     }
 
     /**
@@ -260,7 +260,7 @@ class RoomRoster
             $channel = (string) $channel;
 
             $channels[$channel] = [
-                'users' => array_map('strval', array_keys($users[$channel] ?? [])),
+                'users' => array_map(strval(...), array_keys($users[$channel] ?? [])),
                 'connections' => $count,
             ];
         }
@@ -342,7 +342,7 @@ class RoomRoster
      */
     protected function indexedHashes(string $appId): array
     {
-        $channels = array_map('strval', $this->members($this->keys->channelIndexKey($appId)));
+        $channels = array_map(strval(...), $this->members($this->keys->channelIndexKey($appId)));
 
         if ($channels === []) {
             return [];
@@ -527,7 +527,7 @@ class RoomRoster
      */
     protected function members(string $key): array
     {
-        return array_values(array_map('strval', $this->client()->smembers($key)));
+        return array_values(array_map(strval(...), $this->client()->smembers($key)));
     }
 
     /**
@@ -551,7 +551,7 @@ class RoomRoster
         $sets = [];
 
         foreach (array_values($results) as $result) {
-            $sets[] = is_array($result) ? array_values(array_map('strval', $result)) : [];
+            $sets[] = is_array($result) ? array_values(array_map(strval(...), $result)) : [];
         }
 
         return $sets;

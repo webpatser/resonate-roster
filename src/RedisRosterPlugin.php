@@ -132,6 +132,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     /**
      * Boot the plugin: read config and open the long-lived Redis client.
      */
+    #[\Override]
     public function boot(PluginContext $context): void
     {
         $this->context = $context;
@@ -149,6 +150,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     /**
      * Handle a connection opening. Nothing to do until it subscribes.
      */
+    #[\Override]
     public function onOpen(Connection $connection): void
     {
         //
@@ -157,6 +159,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     /**
      * Record a presence subscription in this node's roster key.
      */
+    #[\Override]
     public function onSubscribe(Connection $connection, Channel $channel): void
     {
         if ($this->redis === null || ! $this->shouldTrack($channel)) {
@@ -187,6 +190,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     /**
      * Drop a presence subscription left by an explicit pusher:unsubscribe.
      */
+    #[\Override]
     public function onUnsubscribe(Connection $connection, Channel $channel): void
     {
         if ($this->redis === null || ! $this->shouldTrack($channel)) {
@@ -205,6 +209,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
     /**
      * Drop every presence subscription held by a closing connection.
      */
+    #[\Override]
     public function onClose(Connection $connection): void
     {
         if ($this->redis === null) {
@@ -228,6 +233,7 @@ class RedisRosterPlugin implements ConnectionLifecycle, ServerPlugin, TickSchedu
      *
      * @return array<int, array{interval: float, callback: callable():void}>
      */
+    #[\Override]
     public function ticks(): array
     {
         return [

@@ -5,6 +5,13 @@ All notable changes to `webpatser/resonate-roster` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-11-27
+
+### Changed
+
+- String-literal `'strval'` callables in `RoomRoster` are now first-class callables (`strval(...)`).
+- `#[\Override]` on the plugin lifecycle methods of `RedisRosterPlugin` and on `RosterServiceProvider::register()`.
+
 ## [1.2.1] - 2026-11-27
 
 ### Changed
@@ -212,6 +219,7 @@ Initial release.
   the `resonate-roster` config (`vendor:publish --tag=resonate-roster-config`).
 - Configurable Redis connection, key prefix, key TTL, and heartbeat interval.
 
+[1.2.2]: https://github.com/webpatser/resonate-roster/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/webpatser/resonate-roster/compare/v1.2.0...v1.2.1
 [1.0.0]: https://github.com/webpatser/resonate-roster/compare/v0.7.2...v1.0.0
 [0.7.2]: https://github.com/webpatser/resonate-roster/compare/v0.7.1...v0.7.2
