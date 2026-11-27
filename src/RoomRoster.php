@@ -349,7 +349,7 @@ class RoomRoster
         }
 
         $nodeSets = $this->pipelinedMembers(array_map(
-            fn (string $channel): string => $this->keys->nodeIndexKey($appId, $channel),
+            $this->keys->nodeIndexKey($appId, ?),
             $channels,
         ));
 
@@ -416,7 +416,7 @@ class RoomRoster
 
         $nodes = $this->members($this->keys->nodeIndexKey($appId, $channel));
 
-        $keys = array_map(fn (string $node): string => $this->keys->hashKey($appId, $channel, $node), $nodes);
+        $keys = array_map($this->keys->hashKey($appId, $channel, ?), $nodes);
 
         $live = [];
         $stale = [];
